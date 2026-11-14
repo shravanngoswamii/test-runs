@@ -1,0 +1,57 @@
+name: JuliaBUGS tests
+run-name: JuliaBUGS tests on ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch of this repository holding the JuliaBUGS.jl checkout
+        required: true
+      groups:
+        description: Test groups, as a JSON list
+        default: '["elementary", "frontend", "graphs", "compilation_model", "compilation_source_gen", "log_density", "model_operations", "callbacks", "params_with_stats", "inference_mh", "inference_hmc", "inference_chains", "inference_flexichains", "inference_slice_sampling", "inference_marginalization", "gibbs", "parallel_sampling", "distributed_sampling", "serialization"]'
+      versions:
+        description: Julia versions, as a JSON list
+        default: '["lts", "1.11", "1"]'
+
+jobs:
+  test:
+    name: ${{ matrix.group }} - Julia ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.versions) }}
+        group: ${{ fromJSON(inputs.groups) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.julia
+          key: julia-${{ matrix.version }}-${{ hashFiles('JuliaBUGS/**/Project.toml') }}
+          restore-keys: julia-${{ matrix.version }}-
+
+      - uses: julia-actions/julia-buildpkg@v1
+        with:
+          project: JuliaBUGS
+
+      - name: Set thread count
+        id: threads
+        run: echo "count=$(nproc)" >> "$GITHUB_OUTPUT"
+
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          project: JuliaBUGS
+          coverage: false
+          force_latest_compatible_version: false
+        env:
+          TEST_GROUP: ${{ matrix.group }}
+          JULIA_NUM_THREADS: ${{ matrix.group == 'parallel_sampling' && steps.threads.outputs.count || '1' }}

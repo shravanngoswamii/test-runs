@@ -1,0 +1,38 @@
+name: JuliaBUGS docs
+run-name: JuliaBUGS docs on ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch of this repository holding the JuliaBUGS.jl checkout
+        required: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1"
+
+      - uses: actions/cache@v6
+        with:
+          path: ~/.julia
+          key: julia-docs-${{ hashFiles('JuliaBUGS/**/Project.toml') }}
+          restore-keys: julia-docs-
+
+      - name: Build
+        run: |
+          julia --project=JuliaBUGS/docs -e 'using Pkg; Pkg.instantiate()'
+          julia --project=JuliaBUGS/docs JuliaBUGS/docs/make.jl
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: docs
+          path: JuliaBUGS/docs/build

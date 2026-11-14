@@ -1,0 +1,67 @@
+name: BUGS fits
+run-name: BUGS fits of ${{ inputs.examples }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      mcmcjs_ref:
+        description: Branch of this repository holding the mcmcjs checkout
+        required: true
+      juliabugs_ref:
+        description: Branch of this repository holding the JuliaBUGS.jl checkout
+        required: true
+      examples:
+        description: Example keys, as a JSON list
+        required: true
+      fit_timeout:
+        description: Minutes each fit may take
+        default: "300"
+
+jobs:
+  fit:
+    name: ${{ matrix.example }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        example: ${{ fromJSON(inputs.examples) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.mcmcjs_ref }}
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.juliabugs_ref }}
+          path: juliabugs
+      - uses: ./.github/actions/setup
+        with:
+          node-version: 22
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1.12"
+      - run: pnpm build
+
+      - name: Emit
+        env:
+          FIT_TIMEOUT_MINUTES: ${{ inputs.fit_timeout }}
+        run: |
+          julia --project=juliabugs/JuliaBUGS -e 'using Pkg; Pkg.instantiate()'
+          julia --project=juliabugs/JuliaBUGS scripts/bugs-examples/emit.jl \
+            "$GITHUB_WORKSPACE/emitted" "${{ matrix.example }}"
+
+      - name: Fit, export, and plot
+        working-directory: emitted
+        run: |
+          printf '#!/bin/sh\nexec node "%s" "$@"\n' "$GITHUB_WORKSPACE/packages/cli/dist/index.js" > mcmc
+          chmod +x mcmc
+          export PATH="$PWD:$PATH"
+          mcmc setup --engine julia
+          sh run.sh
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: bundle-${{ matrix.example }}
+          path: emitted/bundles
+          if-no-files-found: warn

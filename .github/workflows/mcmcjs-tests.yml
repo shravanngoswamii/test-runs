@@ -1,0 +1,59 @@
+name: mcmcjs tests
+run-name: mcmcjs tests on ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch of this repository holding the mcmcjs checkout
+        required: true
+      e2e_filter:
+        description: Only the Julia e2e tests whose name matches this, or empty for all
+        default: ""
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/setup
+        with:
+          node-version: 22
+      - run: pnpm build
+      - run: pnpm check
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  julia-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: ./.github/actions/setup
+        with:
+          node-version: 22
+      - run: pnpm build
+
+      # `mcmc setup` installs Julia, and the first fit provisions the managed project the
+      # e2e suite requires.
+      - name: Provision the managed Julia project
+        run: |
+          node packages/cli/dist/index.js setup --engine julia
+          mkdir -p "$RUNNER_TEMP/provision" && cd "$RUNNER_TEMP/provision"
+          printf 'using Turing\n\n@model function tiny()\n    mu ~ Normal(0, 1)\nend\n\nbuild_model(data) = tiny()\n' > tiny.jl
+          node "$GITHUB_WORKSPACE/packages/cli/dist/index.js" run tiny.jl --draws 10 --warmup 10 --chains 1 || [ $? -eq 2 ]
+
+      - name: Julia e2e
+        env:
+          MCMC_E2E: "1"
+          FILTER: ${{ inputs.e2e_filter }}
+        run: |
+          if [ -n "$FILTER" ]; then
+            pnpm exec vitest run packages/julia/test/e2e.test.ts --reporter=verbose -t "$FILTER"
+          else
+            pnpm exec vitest run packages/julia/test/e2e.test.ts --reporter=verbose
+          fi

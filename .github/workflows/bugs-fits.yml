@@ -16,6 +16,9 @@ on:
       fit_timeout:
         description: Minutes each fit may take
         default: "300"
+      stack:
+        description: Stack size limit for the fits, as `ulimit -s` takes it, or empty for the default
+        default: ""
 
 jobs:
   fit:
@@ -52,7 +55,11 @@ jobs:
 
       - name: Fit, export, and plot
         working-directory: emitted
+        env:
+          STACK: ${{ inputs.stack }}
         run: |
+          if [ -n "$STACK" ]; then ulimit -s "$STACK"; fi
+          echo "stack limit: $(ulimit -s)"
           printf '#!/bin/sh\nexec node "%s" "$@"\n' "$GITHUB_WORKSPACE/packages/cli/dist/index.js" > mcmc
           chmod +x mcmc
           export PATH="$PWD:$PATH"

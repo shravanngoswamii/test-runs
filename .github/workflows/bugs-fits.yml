@@ -53,6 +53,15 @@ jobs:
           julia --project=juliabugs/JuliaBUGS scripts/bugs-examples/emit.jl \
             "$GITHUB_WORKSPACE/emitted" "${{ matrix.example }}"
 
+      # The managed project is built here, with the default stack, since precompiling
+      # under a raised stack limit runs far slower.
+      - name: Provision the managed Julia project
+        run: |
+          node packages/cli/dist/index.js setup --engine julia
+          mkdir -p "$RUNNER_TEMP/provision" && cd "$RUNNER_TEMP/provision"
+          printf 'using Turing\n\n@model function tiny()\n    mu ~ Normal(0, 1)\nend\n\nbuild_model(data) = tiny()\n' > tiny.jl
+          node "$GITHUB_WORKSPACE/packages/cli/dist/index.js" run tiny.jl --draws 10 --warmup 10 --chains 1 || [ $? -eq 2 ]
+
       - name: Fit, export, and plot
         working-directory: emitted
         env:
@@ -63,7 +72,6 @@ jobs:
           printf '#!/bin/sh\nexec node "%s" "$@"\n' "$GITHUB_WORKSPACE/packages/cli/dist/index.js" > mcmc
           chmod +x mcmc
           export PATH="$PWD:$PATH"
-          mcmc setup --engine julia
           sh run.sh
 
       - uses: actions/upload-artifact@v7

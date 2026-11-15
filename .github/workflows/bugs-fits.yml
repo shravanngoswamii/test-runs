@@ -19,6 +19,10 @@ on:
       stack:
         description: Stack size limit for the fits, as `ulimit -s` takes it, or empty for the default
         default: ""
+      dev_juliabugs:
+        description: Fit with the checked-out JuliaBUGS instead of the one the shipped Manifest pins
+        type: boolean
+        default: false
 
 jobs:
   fit:
@@ -61,6 +65,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/provision" && cd "$RUNNER_TEMP/provision"
           printf 'using Turing\n\n@model function tiny()\n    mu ~ Normal(0, 1)\nend\n\nbuild_model(data) = tiny()\n' > tiny.jl
           node "$GITHUB_WORKSPACE/packages/cli/dist/index.js" run tiny.jl --draws 10 --warmup 10 --chains 1 || [ $? -eq 2 ]
+
+      # The readiness check hashes the shipped Manifest, not the managed one, so this
+      # survives into the fit without a re-provision.
+      - name: Develop the checked-out JuliaBUGS into the managed project
+        if: inputs.dev_juliabugs
+        run: |
+          env_dir=$(dirname "$(find "$HOME/.local/share/mcmcjs/julia/env" -name .mcmcjs-packages.json | head -1)")
+          echo "managed project: $env_dir"
+          julia --project="$env_dir" -e '
+            using Pkg
+            Pkg.develop(path = joinpath(ENV["GITHUB_WORKSPACE"], "juliabugs", "JuliaBUGS"))
+            Pkg.precompile()
+            Pkg.status("JuliaBUGS")'
 
       - name: Fit, export, and plot
         working-directory: emitted

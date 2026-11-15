@@ -17,6 +17,7 @@
 
 - `BUGSExamples.biopsies` previously used the initial values of the multivariate Orange Trees example.
 - `BUGSExamples.hepatitis_me` previously used the reference results of the plain Hepatitis example.
+- `step(x)` returned 0 at `x = 0`, where BUGS returns 1, so a count tested with `step(n - 1)` missed every `n = 1`.
 
 ## 0.18.1
 

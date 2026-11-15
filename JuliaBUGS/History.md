@@ -19,6 +19,10 @@
 - `BUGSExamples.hepatitis_me` previously used the reference results of the plain Hepatitis example.
 - `step(x)` returned 0 at `x = 0`, where BUGS returns 1, so a count tested with `step(n - 1)` missed every `n = 1`.
 
+### Improvements
+
+- Recovering the marginalized discrete latents of a draw, and each `EnumeratedSampler` step, summed out the rest of the model again for every latent, which took seconds a draw for the 101 latents of Eye Tracking and minutes for the 1929 of Cervix.
+
 ## 0.18.1
 
 ### Bug Fixes

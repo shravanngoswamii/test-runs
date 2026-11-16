@@ -70,14 +70,19 @@ function try_deepcopy(label)
     end
 end
 
+println("threads: ", Threads.nthreads())
 try_deepcopy("after compile")
-LogDensityProblems.logdensity_and_gradient(ad_model, [0.5, 0.1])
-try_deepcopy("after one gradient")
-sample(StableRNG(123), ad_model, NUTS(0.8), 50; progress=false, n_adapts=20, discard_initial=20)
+copy1 = deepcopy(ad_model)
+input(m) = m.prep.cache.gradient_prep.config.input
+println("  a copy shares the tracked input: ", input(copy1) === input(ad_model))
+sample(StableRNG(123), ad_model, NUTS(0.8), 200; progress=false, n_adapts=100, discard_initial=100)
 try_deepcopy("after a single-chain sample")
-try
-    sample(StableRNG(123), ad_model, NUTS(0.8), MCMCThreads(), 50, 2; progress=false, n_adapts=20, discard_initial=20)
-    println("\nMCMCThreads sample: ok")
-catch e
-    println("\nMCMCThreads sample: ", typeof(e))
+for k in 1:3
+    try
+        sample(StableRNG(123), ad_model, NUTS(0.8), MCMCThreads(), 200, 2; progress=false, n_adapts=100, discard_initial=100)
+        println("\nMCMCThreads sample $k: ok")
+    catch e
+        println("\nMCMCThreads sample $k: ", typeof(e))
+    end
+    try_deepcopy("after MCMCThreads sample $k")
 end

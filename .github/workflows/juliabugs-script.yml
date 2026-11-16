@@ -55,4 +55,4 @@ jobs:
             end
             Pkg.status()'
       - name: Run the script
-        run: julia --project=env --threads=2 "${{ inputs.script }}"
+        run: julia --project=env --threads=4 "${{ inputs.script }}"

@@ -45,6 +45,18 @@ using ForwardDiff
 using Mooncake
 using SliceSampling
 
+function Base.deepcopy_internal(cfg::ReverseDiff.GradientConfig, dict::IdDict)
+    haskey(dict, cfg) && return dict[cfg]
+    tp = ReverseDiff.InstructionTape()
+    copytracked(t) = ReverseDiff.TrackedArray(
+        Base.deepcopy_internal(ReverseDiff.value(t), dict),
+        Base.deepcopy_internal(ReverseDiff.deriv(t), dict),
+        tp,
+    )
+    input = cfg.input isa Tuple ? map(copytracked, cfg.input) : copytracked(cfg.input)
+    return dict[cfg] = ReverseDiff._GradientConfig(input, tp)
+end
+
 JuliaBUGS.@bugs_primitive Beta Bernoulli Categorical Exponential Gamma InverseGamma Normal Uniform LogNormal Poisson
 JuliaBUGS.@bugs_primitive Diagonal Dirichlet LKJ MvNormal
 JuliaBUGS.@bugs_primitive product_distribution

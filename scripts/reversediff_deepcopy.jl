@@ -20,7 +20,13 @@ function tapes(root)
     found = Tuple{String,Bool,Int}[]
     seen = IdDict{Any,Nothing}()
     function walk(x, path)
-        (isbits(x) || x isa Module || x isa DataType || x isa String || x isa Symbol) && return
+        # what `deepcopy` returns as is
+        (
+            isbits(x) || x isa Union{
+                Module,String,Symbol,Core.MethodInstance,Method,GlobalRef,DataType,Union,
+                UnionAll,Task,Regex,
+            }
+        ) && return
         haskey(seen, x) && return
         seen[x] = nothing
         if x isa ReverseDiff.InstructionTape
@@ -32,9 +38,9 @@ function tapes(root)
             push!(found, (path, ReverseDiff.isrecording(x), n))
             return
         end
-        if x isa AbstractArray
-            for (i, e) in enumerate(x)
-                isassigned(x, i) && walk(e, "$path[$i]")
+        if x isa Union{AbstractArray,Memory}
+            for i in eachindex(x)
+                isassigned(x, i) && walk(x[i], "$path[$i]")
                 i > 50 && break
             end
         elseif x isa AbstractDict

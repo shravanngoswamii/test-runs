@@ -1,0 +1,58 @@
+name: JuliaBUGS script
+run-name: ${{ inputs.script }} on ${{ inputs.ref }} ${{ inputs.pins }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch of this repository holding the JuliaBUGS.jl checkout
+        required: true
+      script:
+        description: Script in this repository's main branch
+        required: true
+      packages:
+        description: Packages to add, space separated
+        default: ''
+      pins:
+        description: Exact versions, space separated Name@version
+        default: ''
+      versions:
+        description: Julia versions, as a JSON list
+        default: '["1"]'
+
+jobs:
+  run:
+    name: Julia ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.versions) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+          path: jb
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - name: Set up the environment
+        env:
+          PACKAGES: ${{ inputs.packages }}
+          PINS: ${{ inputs.pins }}
+        run: |
+          julia --project=env -e '
+            using Pkg
+            Pkg.develop(path="jb/JuliaBUGS")
+            pkgs = split(ENV["PACKAGES"])
+            isempty(pkgs) || Pkg.add(String.(pkgs))
+            for pin in split(ENV["PINS"])
+                name, version = split(pin, "@")
+                Pkg.add(name=String(name), version=String(version))
+                Pkg.pin(String(name))
+            end
+            Pkg.status()'
+      - name: Run the script
+        run: julia --project=env --threads=2 "${{ inputs.script }}"

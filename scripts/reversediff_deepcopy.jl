@@ -1,5 +1,5 @@
-using JuliaBUGS, ADTypes, ReverseDiff, AdvancedHMC, AbstractMCMC, StableRNGs, LogDensityProblems
-using Pkg
+using JuliaBUGS, ADTypes, DifferentiationInterface, ReverseDiff, AdvancedHMC, AbstractMCMC
+using StableRNGs, LogDensityProblems
 
 println("ReverseDiff ", pkgversion(ReverseDiff), ", AbstractMCMC ", pkgversion(AbstractMCMC))
 

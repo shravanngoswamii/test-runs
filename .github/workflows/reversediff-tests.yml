@@ -1,0 +1,34 @@
+name: ReverseDiff tests
+run-name: ReverseDiff tests on ${{ inputs.ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch of this repository holding the ReverseDiff.jl checkout
+        required: true
+      versions:
+        description: Julia versions, as a JSON list
+        default: '["min", "1"]'
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.versions) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          coverage: false

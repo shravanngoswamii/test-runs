@@ -12,7 +12,7 @@ canon(x::AbstractString) = repr(String(x))
 canon(x) = "?$(typeof(x)):" * repr(x)
 
 E = JuliaBUGS.BUGSExamples
-println("JSON ", pkgversion(Base.loaded_modules[Base.identify_package("JSON")]), ", Julia ", VERSION)
+println("JSON ", pkgversion(E.JSON), ", Julia ", VERSION)
 all_parts = String[]
 for e in E.ENTRIES
     ex = E.load(e.path)

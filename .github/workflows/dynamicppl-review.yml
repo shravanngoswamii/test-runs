@@ -19,6 +19,10 @@ on:
       head_tests:
         description: Script that checks new PR assertions on both revisions
         default: scripts/dynamicppl_head_varinfo_tests.jl
+      full_suite:
+        description: Run the full DynamicPPL suite
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -75,7 +79,7 @@ jobs:
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: julia --project=target/test --depwarn=yes --color=yes "$REVIEW_HEAD_TESTS" 2>&1 | tee head-tests.log
       - name: Run full suite
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.full_suite }}
         run: julia --project=target/test --depwarn=yes --color=yes target/test/runtests.jl 2>&1 | tee suite.log
       - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}

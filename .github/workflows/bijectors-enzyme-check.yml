@@ -1,0 +1,59 @@
+name: Bijectors Enzyme check
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base commit copied into test-runs
+        required: true
+      head:
+        description: Patched commit copied into test-runs
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        ref: ${{ fromJSON(format('["{0}", "{1}"]', inputs.base, inputs.head)) }}
+    env:
+      JULIA_NUM_THREADS: '2'
+      JULIA_NUM_PRECOMPILE_TASKS: '2'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+          path: target
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.10.13'
+      - uses: julia-actions/cache@v3
+      - name: Set up Enzyme environment
+        run: |
+          julia --project=target/test/integration_tests/enzyme -e '
+            using Pkg
+            Pkg.develop(path=abspath("target"))
+            Pkg.update()
+            Pkg.add(PackageSpec(name="Enzyme", version=v"0.13.221"))
+            Pkg.pin("Enzyme")
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
+      - name: Reproduce the stale broken assertion
+        run: julia --project=target/test/integration_tests/enzyme scripts/bijectors_enzyme_check.jl 2>&1 | tee enzyme-check.log
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: enzyme-${{ matrix.ref }}
+          path: |
+            enzyme-check.log
+            target/test/integration_tests/enzyme/Project.toml
+            target/test/integration_tests/enzyme/Manifest.toml

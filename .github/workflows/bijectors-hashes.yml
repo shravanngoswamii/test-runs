@@ -1,0 +1,104 @@
+name: Bijectors hashes
+run-name: Bijectors hashes at ${{ inputs.head }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Base commit copied into test-runs
+        required: true
+      head:
+        description: Patched commit copied into test-runs
+        required: true
+      versions:
+        description: Julia versions as a JSON list
+        default: '["1.10.8", "1"]'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: Julia ${{ matrix.version }} at ${{ matrix.ref }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(inputs.versions) }}
+        ref: ${{ fromJSON(format('["{0}", "{1}"]', inputs.base, inputs.head)) }}
+    env:
+      JULIA_NUM_THREADS: '2'
+      JULIA_NUM_PRECOMPILE_TASKS: '2'
+      REVIEW_HEAD: ${{ matrix.ref == inputs.head }}
+      GROUP: All
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.ref }}
+          path: target
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head }}
+          path: head-tests
+          sparse-checkout: test/bijectors/equality.jl
+          sparse-checkout-cone-mode: false
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/DynamicPPL.jl
+          ref: c74dedf7790dc2e58a3e048b9dcab1a1f6f1fc34
+          path: dppl
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v3
+      - name: Set up test environment
+        id: setup
+        run: |
+          julia --project=target/test --color=yes -e '
+            using Pkg
+            Pkg.develop(path=abspath("target"))
+            Pkg.update()
+            Pkg.instantiate()
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
+      - name: Check hashes and new assertions
+        run: julia --project=target/test --color=yes scripts/bijectors_hash_checks.jl 2>&1 | tee checks.log
+      - name: Set up DynamicPPL integration
+        id: integration
+        run: |
+          julia --project=integration --color=yes -e '
+            using Pkg
+            Pkg.develop([PackageSpec(path=abspath("target")), PackageSpec(path=abspath("dppl"))])
+            Pkg.add(["Distributions", "OffsetArrays"])
+            Pkg.update()
+            Pkg.instantiate()
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
+      - name: Check fixed model transforms
+        run: |
+          julia --project=integration --color=yes -e '
+            include("scripts/dynamicppl_hash_dependencies.jl")
+            data = TOML.parsefile("results.toml")
+            bad = filter(data["observations"]) do row
+                haskey(row, "error") || (row["equal"] && (!row["hashes_agree"] || row["set_length"] != 1 || row["dict_lookup"] != 1))
+            end
+            println("Remaining hash failures: ", length(bad))
+            @assert (ENV["REVIEW_HEAD"] == "true" ? isempty(bad) : !isempty(bad))' 2>&1 | tee integration.log
+      - name: Run full suite
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: bijectors-${{ matrix.version }}-${{ matrix.ref }}
+          path: |
+            *.log
+            *.toml
+            target/test/Project.toml
+            target/test/Manifest*.toml
+            integration/Project.toml
+            integration/Manifest*.toml

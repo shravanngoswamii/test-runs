@@ -5,6 +5,15 @@ include(joinpath(@__DIR__, "..", "target", "test", "test_resources.jl"))
 
 ad_forward = AutoEnzyme(; mode=set_runtime_activity(Forward), function_annotation=Const)
 ad_reverse = AutoEnzyme(; mode=set_runtime_activity(Reverse), function_annotation=Const)
+if get(ENV, "REVIEW_ENZYME_CASE", "reshape") == "product"
+    c = first(filter(generate_vector_testcases()) do c
+        c.tag === :products && c.dist isa Distributions.ProductNamedTupleDistribution
+    end)
+    Random.seed!(23)
+    run_vector_case(c, [ad_forward, ad_reverse])
+    exit()
+end
+
 c = only(filter(c -> c.tag === :reshaped_beta_special, generate_vector_testcases()))
 
 failure = try

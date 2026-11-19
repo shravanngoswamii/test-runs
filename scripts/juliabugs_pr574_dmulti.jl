@@ -49,16 +49,16 @@ end
 
 println("\n3. Gibbs with NUTS on a latent discrete variable")
 gibbs_defs = (
-    "dmulti" => (@bugs begin
+    "dmulti" => (@bugs(begin
         mu ~ dnorm(0, 1)
         counts[1:3] ~ dmulti(p[1:3], 1)
         x ~ dnorm(mu + counts[1], 1)
-    end, (; p=[0.2, 0.3, 0.5], x=0.5), @varname(counts)),
-    "dpois" => (@bugs begin
+    end), (; p=[0.2, 0.3, 0.5], x=0.5), @varname(counts)),
+    "dpois" => (@bugs(begin
         mu ~ dnorm(0, 1)
         k ~ dpois(2)
         x ~ dnorm(mu + k, 1)
-    end, (; x=0.5), @varname(k)),
+    end), (; x=0.5), @varname(k)),
 )
 for (name, (def, data, latent)) in gibbs_defs
     model = compile(def, data)

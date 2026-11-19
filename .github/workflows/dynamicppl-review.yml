@@ -20,7 +20,7 @@ permissions:
 jobs:
   review:
     name: Julia ${{ matrix.version }} at ${{ matrix.ref }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
       fail-fast: false

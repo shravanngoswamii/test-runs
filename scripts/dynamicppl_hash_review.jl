@@ -108,7 +108,7 @@ failure = try
                 mask = reshape([!iszero(bits & (1 << (i-1))) for i in 1:n], dims)
                 reference = PartialArray(copy(data), copy(mask))
                 variants = (
-                    PartialArray(Float64.(data), copy(mask)),
+                    PartialArray(reshape(Float64.(vec(data)), dims), copy(mask)),
                     PartialArray(GrowableArray(copy(data)), copy(mask)),
                     PartialArray(copy(data), GrowableArray(copy(mask))),
                     PartialArray(GrowableArray(copy(data)), GrowableArray(copy(mask))),

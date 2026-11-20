@@ -3,17 +3,25 @@ using AbstractPPL: AbstractPPL
 using BangBang: setindex!!
 using Distributions, DynamicPPL, ForwardDiff, Test, TOML
 using DynamicPPL: predict
+using DynamicPPL.VarNamedTuples: templated_setindex!!
 using LinearAlgebra: I
 using Random: Xoshiro
 using MCMCChains: Chains
 
 const HEAD = get(ENV, "REVIEW_HEAD", "false") == "true"
 const OBSERVATIONS = Dict{String,Any}[]
+function save_results()
+    open("results.toml", "w") do io
+        TOML.print(io, Dict("julia" => string(VERSION), "head" => HEAD, "observations" => OBSERVATIONS))
+    end
+end
+atexit(save_results)
 function observe(f, label)
     row = Dict{String,Any}("label" => label)
     try
         result = f()
-        row["value"] = repr(result)
+        printable = result isa ParamsWithStats ? (params=collect(pairs(result.params)), stats=result.stats) : result
+        row["value"] = repr(printable)
         row["type"] = string(typeof(result))
     catch err
         row["error"] = sprint(showerror, err)
@@ -158,6 +166,10 @@ end
         @test threaded.iterations == output.iterations
         chain = convert(Chains, pred)
         @test size(chain, 1) == 2
+        observe("MCMCChains prediction linear=$linear") do
+            result = predict(Xoshiro(8), model, chain)
+            (size(result), range(result), names(result))
+        end
     end
     linear = VarNamedTuple((@varname(trips[1]) => 30.0,))
     for model in (trip_matrix(; linear=true), condition(trip_matrix(; linear=true), @varname(trips[9]) => 50.0), fix(trip_matrix(; linear=true), @varname(trips[9]) => 50.0))
@@ -173,6 +185,16 @@ end
     end
     observe("partial multivariate prediction") do
         predict(Xoshiro(4), vector_trip(), VarNamedTuple((@varname(trips[1]) => 1.0,)))
+    end
+    for model in (trip_matrix(), trip_matrix(; linear=true))
+        expected = predict(Xoshiro(9), model, VarNamedTuple())
+        unused = VarNamedTuple((@varname(unused[1, 2]) => 3.0,))
+        @test isequal(expected, predict(Xoshiro(9), model, unused))
+        missing_params = Matrix{Union{Missing,Float64}}(missing, 3, 3)
+        missing_params[1, 2] = 30.0
+        selected = predict(Xoshiro(9), model, VarNamedTuple(; trips=missing_params))
+        @test !haskey(selected.params, @varname(trips[1, 2]))
+        @test haskey(selected.params, @varname(trips[2, 2]))
     end
 end
 
@@ -192,6 +214,4 @@ end
 observe("AbstractPPL API exports") do
     [(name, Base.isexported(AbstractPPL, name)) for name in (:concretize_top_level, :varname_and_value_leaves, :getsym)]
 end
-open("results.toml", "w") do io
-    TOML.print(io, Dict("julia" => string(VERSION), "head" => HEAD, "observations" => OBSERVATIONS))
-end
+save_results()

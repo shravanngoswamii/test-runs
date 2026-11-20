@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   render:
     runs-on: ubuntu-24.04
@@ -25,7 +29,8 @@ jobs:
         working-directory: target
         run: |
           quarto --version
-          quarto render usage/sampling-options/index.qmd --no-execute 2>&1 | tee ../base-guide.log
+          quarto render usage/sampling-options/index.qmd --no-execute --metadata engine:markdown 2>&1 | tee ../base-guide.log
+          test -s _site/usage/sampling-options/index.html
           mv _site ../base-site
       - name: Apply the guide patch
         run: |
@@ -41,7 +46,9 @@ jobs:
           PYTHON
       - name: Render the updated page
         working-directory: target
-        run: quarto render usage/sampling-options/index.qmd --no-execute 2>&1 | tee ../head-guide.log
+        run: |
+          quarto render usage/sampling-options/index.qmd --no-execute --metadata engine:markdown 2>&1 | tee ../head-guide.log
+          test -s _site/usage/sampling-options/index.html
       - uses: actions/upload-artifact@v6
         if: always()
         with:

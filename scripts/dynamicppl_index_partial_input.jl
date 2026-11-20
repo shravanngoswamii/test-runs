@@ -15,11 +15,20 @@ end
     arrival ~ Normal()
     return arrival
 end
+@model function first_scalar_route()
+    speeds = Vector{Real}(undef, 2)
+    speeds[1] ~ Normal()
+    arrival ~ Normal(speeds[1], 1)
+    return arrival
+end
 
 @testset "Prediction only reads supplied model entries" begin
     partial = Vector{Vector{Float64}}(undef, 2)
     partial[1] = [30.0]
+    scalars = Vector{Real}(undef, 2)
+    scalars[1] = 30.0
     for (label, model, params) in (
+        ("partly assigned scalar input", first_scalar_route(), VarNamedTuple(; speeds=scalars)),
         ("partly assigned input", first_route(), VarNamedTuple(; speeds=partial)),
         ("unused array input", arrival_only(), VarNamedTuple(; unused=partial)),
         ("fully assigned control", first_route(), VarNamedTuple(; speeds=[[30.0], [40.0]])),

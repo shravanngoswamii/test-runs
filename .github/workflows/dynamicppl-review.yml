@@ -1,99 +1,52 @@
-name: Turing sampler docs
-run-name: Turing sampler docs on Julia ${{ inputs.version }}
+name: Turing sampling guide
+run-name: Render the adaptive sampling guide
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: Julia version
-        default: '1.13.4'
-      full_suite:
-        description: Run the full Turing suite after the probes
-        type: boolean
-        default: true
 
 permissions:
   contents: read
 
-defaults:
-  run:
-    shell: bash
-
 jobs:
-  review:
+  render:
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
-    env:
-      JULIA_NUM_THREADS: '2'
-      JULIA_NUM_PRECOMPILE_TASKS: '2'
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          repository: TuringLang/Turing.jl
-          ref: 168dbea1d2ca555cf21064bd5d438e625658f363
+          repository: TuringLang/docs
+          ref: 5c36b7a3718b0d9bd0e8a478260148e11ee057ba
           path: target
-      - uses: julia-actions/setup-julia@v3
+      - uses: quarto-dev/quarto-actions/setup@v2
         with:
-          version: ${{ inputs.version }}
-      - uses: julia-actions/cache@v3
-      - name: Update test environment
+          version: '1.11.9'
+      - name: Render the original page
+        working-directory: target
         run: |
-          julia --project=target/test --color=yes -e '
-            using Pkg
-            Pkg.develop(path=abspath("target"))
-            Pkg.update()
-            Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
-      - name: Check base behavior
-        run: julia --project=target/test --color=yes scripts/turing_sampler_keywords.jl base 2>&1 | tee base-probe.log
-      - name: Update documentation environment
+          quarto --version
+          quarto render usage/sampling-options/index.qmd --no-execute 2>&1 | tee ../base-guide.log
+          mv _site ../base-site
+      - name: Apply the guide patch
         run: |
-          julia --project=target/docs --color=yes -e '
-            using Pkg
-            Pkg.develop(path=abspath("target"))
-            Pkg.update()
-            Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee docs-setup.log
-      - name: Build base documentation
-        run: |
-          julia --project=target/docs --color=yes target/docs/make.jl 2>&1 | tee base-docs.log
-          mv target/docs/build base-docs
-      - name: Apply documentation patch
-        run: git -C target apply ../patches/turing-sampler-keyword-docs.patch
-      - name: Check patched behavior
-        run: julia --project=target/test --color=yes scripts/turing_sampler_keywords.jl head 2>&1 | tee head-probe.log
-      - name: Build patched documentation
-        run: |
-          julia --project=target/docs --color=yes target/docs/make.jl 2>&1 | tee head-docs.log
-          python3 - <<'PY'
+          git -C target apply ../patches/turing-adaptive-sampling-guide.patch
+          python3 - <<'PYTHON'
           from pathlib import Path
-          base = Path('base-docs/api/Inference/index.html').read_text()
-          head = Path('target/docs/build/api/Inference/index.html').read_text()
-          assert 'For a new chain, the following keywords' not in base
-          assert 'For a new chain, the following keywords' in head
-          print('Adaptive sampler docstring is present in the rendered API page.')
-          PY
-      - name: Check formatting
-        run: |
-          julia --color=yes -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
-          sha256sum target/src/mcmc/hmc.jl > formatter-before.sha256
-          julia --color=yes -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
-          git -C target diff > formatted.patch
-          sha256sum -c formatter-before.sha256
-      - name: Run full Turing suite
-        if: ${{ inputs.full_suite }}
-        run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log
+          import re, subprocess
+          path = 'usage/sampling-options/index.qmd'
+          base = subprocess.check_output(['git', '-C', 'target', 'show', f'HEAD:{path}'], text=True)
+          head = Path('target', path).read_text()
+          assert re.findall(r'```.*?```', base, re.S) == re.findall(r'```.*?```', head, re.S)
+          print('Every code block is unchanged.')
+          PYTHON
+      - name: Render the updated page
+        working-directory: target
+        run: quarto render usage/sampling-options/index.qmd --no-execute 2>&1 | tee ../head-guide.log
       - uses: actions/upload-artifact@v6
-        if: ${{ !cancelled() }}
+        if: always()
         with:
-          name: turing-sampler-docs-${{ inputs.version }}
+          name: sampling-guide-render
           path: |
-            *.log
-            *.toml
-            *-help.txt
-            formatted.patch
-            target/test/Manifest*.toml
-            target/docs/Manifest*.toml
-            base-docs/
-            target/docs/build/
+            *-guide.log
+            base-site/
+            target/_site/

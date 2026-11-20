@@ -1,5 +1,5 @@
-name: Turing sampling guide
-run-name: Render the adaptive sampling guide
+name: Turing sampling docs
+run-name: Check adaptive sampling documentation edits
 
 on:
   workflow_dispatch:
@@ -12,6 +12,74 @@ defaults:
     shell: bash
 
 jobs:
+  api:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      JULIA_NUM_THREADS: '2'
+      JULIA_NUM_PRECOMPILE_TASKS: '2'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/Turing.jl
+          ref: 168dbea1d2ca555cf21064bd5d438e625658f363
+          path: target
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13.4'
+      - uses: julia-actions/cache@v3
+      - name: Apply documentation patch
+        run: git -C target apply ../patches/turing-sampler-keyword-docs.patch
+      - name: Check formatting
+        run: |
+          julia --color=yes -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
+          sha256sum target/src/mcmc/hmc.jl > formatter-before.sha256
+          julia --color=yes -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
+          sha256sum -c formatter-before.sha256
+      - name: Update documentation environment
+        run: |
+          julia --project=target/docs --color=yes -e '
+            using Pkg
+            Pkg.develop(path=abspath("target"))
+            Pkg.update()
+            Pkg.instantiate()
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee docs-setup.log
+      - name: Build API documentation
+        run: |
+          julia --project=target/docs --color=yes target/docs/make.jl 2>&1 | tee head-docs.log
+          python3 - <<'PY'
+          from pathlib import Path
+          from html.parser import HTMLParser
+          class Paragraphs(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.lists = 0
+                  self.found = False
+              def handle_starttag(self, tag, attrs):
+                  if tag == 'li': self.lists += 1
+              def handle_endtag(self, tag):
+                  if tag == 'li': self.lists -= 1
+              def handle_data(self, data):
+                  if 'The returned chain still contains' in data:
+                      assert self.lists == 0
+                      self.found = True
+          html = Path('target/docs/build/api/Inference/index.html').read_text()
+          parser = Paragraphs()
+          parser.feed(html)
+          assert parser.found
+          assert 'NUTS(0, δ)' in html and 'HMCDA(0, δ, λ)' in html
+          assert 'Keyword Arguments' in html
+          print('Constructor forms and paragraph structure rendered correctly.')
+          PY
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: adaptive-sampling-api
+          path: |
+            *.log
+            target/docs/Manifest*.toml
+            target/docs/build/
   render:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -34,13 +102,6 @@ jobs:
           assert text.count('engine: julia') == 1
           path.write_text(text.replace('engine: julia', 'engine: markdown', 1))
           PYTHON
-      - name: Render the original page
-        working-directory: target
-        run: |
-          quarto --version
-          quarto render usage/sampling-options/index.qmd --no-execute --metadata engine:markdown 2>&1 | tee ../base-guide.log
-          test -s _site/usage/sampling-options/index.html
-          mv _site ../base-site
       - name: Apply the guide patch
         run: |
           git -C target apply ../patches/turing-adaptive-sampling-guide.patch
@@ -56,13 +117,20 @@ jobs:
       - name: Render the updated page
         working-directory: target
         run: |
+          quarto --version
           quarto render usage/sampling-options/index.qmd --no-execute --metadata engine:markdown 2>&1 | tee ../head-guide.log
           test -s _site/usage/sampling-options/index.html
+          python3 - <<'PY'
+          from pathlib import Path
+          html = Path('_site/usage/sampling-options/index.html').read_text()
+          assert html.index('If the constructor omits') < html.index('Warmup steps and')
+          assert 'Without an explicit count' not in html
+          print('Adaptation defaults precede the implementation details.')
+          PY
       - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: sampling-guide-render
           path: |
             *-guide.log
-            base-site/
             target/_site/

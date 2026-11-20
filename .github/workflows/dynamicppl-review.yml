@@ -1,26 +1,14 @@
-name: DynamicPPL review
-run-name: DynamicPPL review of ${{ inputs.head }}
+name: Turing sampler docs
+run-name: Turing sampler docs on Julia ${{ inputs.version }}
 
 on:
   workflow_dispatch:
     inputs:
-      base:
-        description: Base commit in TuringLang/DynamicPPL.jl
-        required: true
-      head:
-        description: PR commit in TuringLang/DynamicPPL.jl
-        required: true
-      versions:
-        description: Julia versions as a JSON list
-        default: '["1.10.8", "1"]'
-      probe:
-        description: Independent check script in test-runs
-        default: scripts/dynamicppl_varinfo_queries.jl
-      head_tests:
-        description: Script that checks new PR assertions on both revisions
-        default: scripts/dynamicppl_head_varinfo_tests.jl
+      version:
+        description: Julia version
+        default: '1.13.4'
       full_suite:
-        description: Run the full DynamicPPL suite
+        description: Run the full Turing suite after the probes
         type: boolean
         default: true
 
@@ -33,64 +21,78 @@ defaults:
 
 jobs:
   review:
-    name: Julia ${{ matrix.version }} at ${{ matrix.ref }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        version: ${{ fromJSON(inputs.versions) }}
-        ref: ${{ fromJSON(format('["{0}", "{1}"]', inputs.base, inputs.head)) }}
+    timeout-minutes: 150
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '2'
-      EXPECT_RECORDED_QUERIES: ${{ matrix.ref == inputs.head }}
-      REVIEW_HEAD: ${{ matrix.ref == inputs.head }}
-      GROUP: All
-      AQUA: ${{ matrix.version == '1' }}
-      REVIEW_PROBE: ${{ inputs.probe }}
-      REVIEW_HEAD_TESTS: ${{ inputs.head_tests }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          repository: TuringLang/DynamicPPL.jl
-          ref: ${{ matrix.ref }}
+          repository: TuringLang/Turing.jl
+          ref: 168dbea1d2ca555cf21064bd5d438e625658f363
           path: target
-      - uses: actions/checkout@v7
-        with:
-          repository: TuringLang/DynamicPPL.jl
-          ref: ${{ inputs.head }}
-          path: head-tests
-          sparse-checkout: test/
-          sparse-checkout-cone-mode: false
       - uses: julia-actions/setup-julia@v3
         with:
-          version: ${{ matrix.version }}
+          version: ${{ inputs.version }}
       - uses: julia-actions/cache@v3
-      - name: Set up test environment
-        id: setup
+      - name: Update test environment
         run: |
           julia --project=target/test --color=yes -e '
             using Pkg
             Pkg.develop(path=abspath("target"))
             Pkg.update()
             Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
-      - name: Check public workflows and query behaviour
-        run: julia --project=target/test --depwarn=yes --color=yes "$REVIEW_PROBE" 2>&1 | tee probes.log
-      - name: Check PR tests on this revision
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: julia --project=target/test --depwarn=yes --color=yes "$REVIEW_HEAD_TESTS" 2>&1 | tee head-tests.log
-      - name: Run full suite
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && inputs.full_suite }}
-        run: julia --project=target/test --depwarn=yes --color=yes target/test/runtests.jl 2>&1 | tee suite.log
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
+      - name: Check base behavior
+        run: julia --project=target/test --color=yes scripts/turing_sampler_keywords.jl base 2>&1 | tee base-probe.log
+      - name: Update documentation environment
+        run: |
+          julia --project=target/docs --color=yes -e '
+            using Pkg
+            Pkg.develop(path=abspath("target"))
+            Pkg.update()
+            Pkg.instantiate()
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee docs-setup.log
+      - name: Build base documentation
+        run: |
+          julia --project=target/docs --color=yes target/docs/make.jl 2>&1 | tee base-docs.log
+          mv target/docs/build base-docs
+      - name: Apply documentation patch
+        run: git -C target apply ../patches/turing-sampler-keyword-docs.patch
+      - name: Check patched behavior
+        run: julia --project=target/test --color=yes scripts/turing_sampler_keywords.jl head 2>&1 | tee head-probe.log
+      - name: Build patched documentation
+        run: |
+          julia --project=target/docs --color=yes target/docs/make.jl 2>&1 | tee head-docs.log
+          python3 - <<'PY'
+          from pathlib import Path
+          base = Path('base-docs/api/Inference/index.html').read_text()
+          head = Path('target/docs/build/api/Inference/index.html').read_text()
+          assert 'For a new chain, the following keywords' not in base
+          assert 'For a new chain, the following keywords' in head
+          print('Adaptive sampler docstring is present in the rendered API page.')
+          PY
+      - name: Check formatting
+        run: |
+          julia --color=yes -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
+          julia --color=yes -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
+          git -C target diff > formatted.patch
+          cmp patches/turing-sampler-keyword-docs.patch formatted.patch
+      - name: Run full Turing suite
+        if: ${{ inputs.full_suite }}
+        run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log
       - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}
         with:
-          name: dynamicppl-${{ matrix.version }}-${{ matrix.ref }}
+          name: turing-sampler-docs-${{ inputs.version }}
           path: |
             *.log
-            results.toml
-            target/test/Project.toml
+            *.toml
+            *-help.txt
+            formatted.patch
             target/test/Manifest*.toml
+            target/docs/Manifest*.toml
+            base-docs/
+            target/docs/build/

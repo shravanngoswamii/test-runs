@@ -4,6 +4,9 @@ run-name: DynamicPPL review of ${{ inputs.head }}
 on:
   workflow_dispatch:
     inputs:
+      repository:
+        description: Repository containing both revisions
+        default: TuringLang/DynamicPPL.jl
       base:
         description: Base commit in TuringLang/DynamicPPL.jl
         required: true
@@ -38,6 +41,7 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         version: ${{ fromJSON(inputs.versions) }}
         ref: ${{ fromJSON(format('["{0}", "{1}"]', inputs.base, inputs.head)) }}
@@ -54,12 +58,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          repository: TuringLang/DynamicPPL.jl
+          repository: ${{ inputs.repository }}
           ref: ${{ matrix.ref }}
           path: target
       - uses: actions/checkout@v7
         with:
-          repository: TuringLang/DynamicPPL.jl
+          repository: ${{ inputs.repository }}
           ref: ${{ inputs.head }}
           path: head-tests
           sparse-checkout: test/

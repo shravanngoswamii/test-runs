@@ -25,6 +25,15 @@ jobs:
       - uses: quarto-dev/quarto-actions/setup@v2
         with:
           version: '1.11.9'
+      - name: Select the Markdown engine for this prose check
+        run: |
+          python3 - <<'PYTHON'
+          from pathlib import Path
+          path = Path('target/usage/sampling-options/index.qmd')
+          text = path.read_text()
+          assert text.count('engine: julia') == 1
+          path.write_text(text.replace('engine: julia', 'engine: markdown', 1))
+          PYTHON
       - name: Render the original page
         working-directory: target
         run: |

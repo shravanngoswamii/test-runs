@@ -3,7 +3,7 @@ fixed = parse(Bool, ENV["REVIEW_HEAD"])
 result = try
     include("dynamicppl_observations_example.jl")
 catch err
-    err
+    err isa LoadError ? err.error : err
 end
 @show result
 @testset "PR description example" begin

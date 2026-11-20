@@ -61,7 +61,7 @@ end
     end
     d = SymbolChoice()
     @test loglikelihood(d, :right) == -log(2)
-    @test eltype(d) === Int
+    @test eltype(d) === Symbol
     @test_throws MethodError logpdf(d, :right)
     @test_throws MethodError rand(Xoshiro(1), d)
     @test logjoint(choice(:right), (; x=0.0)) ≈ logpdf(Normal(), 0.0) - log(2)

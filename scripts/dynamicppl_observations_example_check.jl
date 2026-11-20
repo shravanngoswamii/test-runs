@@ -7,6 +7,7 @@ catch err
 end
 @show result
 @testset "PR description example" begin
+    @test eltype(SymbolChoice()) === Symbol
     if fixed
         @test result === true
     else

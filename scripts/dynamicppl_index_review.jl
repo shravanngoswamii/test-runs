@@ -201,7 +201,8 @@ end
 @testset "AD and type preservation" begin
     for T in (Float32, Float64, BigFloat)
         params = templated_setindex!!(VarNamedTuple(), T(1), @varname(trips[1, 2]), zeros(T, 3, 3))
-        @test params[@varname(trips[1, 2])] === T(1)
+        @test params[@varname(trips[1, 2])] isa T
+        @test isequal(params[@varname(trips[1, 2])], T(1))
         @test returned(aliased_trips(), params) == T(1)
     end
     density(x) = logjoint(aliased_trips(), templated_setindex!!(VarNamedTuple(), x, @varname(trips[1, 2]), zeros(3, 3)))

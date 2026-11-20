@@ -77,9 +77,10 @@ jobs:
       - name: Check formatting
         run: |
           julia --color=yes -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
+          sha256sum target/src/mcmc/hmc.jl > formatter-before.sha256
           julia --color=yes -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
           git -C target diff > formatted.patch
-          cmp patches/turing-sampler-keyword-docs.patch formatted.patch
+          sha256sum -c formatter-before.sha256
       - name: Run full Turing suite
         if: ${{ inputs.full_suite }}
         run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log

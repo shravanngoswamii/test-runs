@@ -1,4 +1,4 @@
-using Turing, Random, Test, TOML
+using Turing, Random, Test, TOML, REPL
 import DynamicPPL
 
 @model scalar_normal() = x ~ Normal()
@@ -41,6 +41,8 @@ end
                  nadapts=4, first=4, adaptations=0)
         full = run_case("$name/keep", make_sampler(8), 40;
                         discard_adapt=false, first=0, adaptations=8)
+        run_case("$name/short", make_sampler(8), 4;
+                 discard_adapt=false, first=0, adaptations=3)
         for flag in (false, true)
             c = run_case("$name/explicit-$flag", make_sampler(8), 20;
                          discard_adapt=flag, discard_initial=2, first=2, adaptations=8)

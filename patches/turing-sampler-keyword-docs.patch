@@ -1,5 +1,5 @@
 diff --git a/src/mcmc/hmc.jl b/src/mcmc/hmc.jl
-index 9928a57a3..7e65411f8 100644
+index 9928a57a3..2bc42f68a 100644
 --- a/src/mcmc/hmc.jl
 +++ b/src/mcmc/hmc.jl
 @@ -85,7 +85,37 @@ end
@@ -14,7 +14,7 @@ index 9928a57a3..7e65411f8 100644
 +
 +For a new chain, the following keywords control adaptation and discarding:
 +
-+- `nadapts=sampler.n_adapts`: Number of adaptation steps.
++- `nadapts=sampler.n_adapts`: Maximum number of adaptation steps.
 +
 +  A value of `-1` selects `min(1000, N ÷ 2)`.
 +
@@ -24,7 +24,7 @@ index 9928a57a3..7e65411f8 100644
 +
 +- `discard_adapt=true`: Discard the first `nadapts` samples by default.
 +
-+  Set this to `false` to keep them.
++  Set this to `false` to disable this initial discard.
 +
 +- `discard_initial=-1`: Use `discard_adapt` to determine how many initial samples to discard.
 +
@@ -32,7 +32,7 @@ index 9928a57a3..7e65411f8 100644
 +
 +  The returned chain still contains `N` samples.
 +
-+With `initial_state`, adaptation is disabled and no initial samples are discarded, regardless of these three keywords.
++When resuming from `initial_state`, adaptation is disabled and no initial samples are discarded, regardless of these three keywords.
 +
 +For these samplers, `nadapts` controls adaptation rather than `num_warmup`.
 +

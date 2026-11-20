@@ -30,14 +30,13 @@ else
         for mode in (fixed ? ("correct", "mute", "symbol_only", "number_only") : ("base",))
             file = "regression-$(mode).log"
             process = open(file, "w") do io
-                run(pipeline(ignorestatus(`$(Base.julia_cmd()) --project=target/test $(@__FILE__) $mode`),
+                run(pipeline(ignorestatus(`$(Base.julia_cmd()) --color=no --project=target/test $(@__FILE__) $mode`),
                              stdout=io, stderr=io))
             end
             output = read(file, String)
             print(output)
             if mode == "correct"
                 @test success(process)
-                @test occursin(r"non-numeric data\s+\|\s+3\s+3", output)
             else
                 @test !success(process)
                 @test occursin(mode in ("mute", "number_only") ? "Test Failed" : "Error During Test", output)

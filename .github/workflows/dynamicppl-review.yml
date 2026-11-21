@@ -1,5 +1,5 @@
 name: Turing sampling docs
-run-name: Check adaptive sampling documentation edits
+run-name: Check sampling documentation paragraphs
 
 on:
   workflow_dispatch:
@@ -51,6 +51,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           from html.parser import HTMLParser
+          import re
           class Paragraphs(HTMLParser):
               def __init__(self):
                   super().__init__()
@@ -70,7 +71,15 @@ jobs:
           assert parser.found
           assert 'NUTS(0, δ)' in html and 'HMCDA(0, δ, λ)' in html
           assert 'Keyword Arguments' in html
-          print('Constructor forms and paragraph structure rendered correctly.')
+          section = html[html.index('Draw <code>N</code> samples from'):]
+          section = section[:section.index('docs-sourcelink')]
+          items = re.findall(r'<li>(.*?)</li>', section, re.S)
+          assert len(items) == 3
+          assert all(item.count('<p>') <= 1 for item in items)
+          assert 'NUTS(0, δ)' in items[0]
+          assert 'Set this to' in items[1]
+          assert 'A nonnegative value' in items[2]
+          print('Each keyword renders as one compact list item.')
           PY
       - uses: actions/upload-artifact@v6
         if: always()
@@ -122,10 +131,16 @@ jobs:
           test -s _site/usage/sampling-options/index.html
           python3 - <<'PY'
           from pathlib import Path
+          import re
           html = Path('_site/usage/sampling-options/index.html').read_text()
           assert html.index('If the constructor omits') < html.index('Warmup steps and')
           assert 'Without an explicit count' not in html
-          print('Adaptation defaults precede the implementation details.')
+          paragraphs = re.findall(r'<p>(.*?)</p>', html, re.S)
+          defaults = next(p for p in paragraphs if p.startswith('The defaults for'))
+          discard = next(p for p in paragraphs if p.startswith('By default, <code>discard_adapt'))
+          assert 'If the constructor omits' in defaults
+          assert 'Set <code>discard_adapt=false</code>' in discard
+          print('The adaptation and discard explanations each render as one paragraph.')
           PY
       - uses: actions/upload-artifact@v6
         if: always()

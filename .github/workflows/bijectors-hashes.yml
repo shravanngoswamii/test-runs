@@ -1,18 +1,8 @@
 name: Bijectors hashes
-run-name: Bijectors hashes at ${{ inputs.head }}
+run-name: Review transform hash regressions
 
 on:
   workflow_dispatch:
-    inputs:
-      base:
-        description: Base commit copied into test-runs
-        required: true
-      head:
-        description: Patched commit copied into test-runs
-        required: true
-      versions:
-        description: Julia versions as a JSON list
-        default: '["1.10.8", "1"]'
 
 permissions:
   contents: read
@@ -22,83 +12,73 @@ defaults:
     shell: bash
 
 jobs:
-  test:
-    name: Julia ${{ matrix.version }} at ${{ matrix.ref }}
+  review:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
-        version: ${{ fromJSON(inputs.versions) }}
-        ref: ${{ fromJSON(format('["{0}", "{1}"]', inputs.base, inputs.head)) }}
+        version: ['1.10.8', '1.13.4']
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '2'
-      REVIEW_HEAD: ${{ matrix.ref == inputs.head }}
       GROUP: All
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          ref: ${{ matrix.ref }}
+          repository: TuringLang/Bijectors.jl
+          ref: 11b05bb8ca4b6c23d2d194d040506ef8d2f47df2
+          fetch-depth: 0
           path: target
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.head }}
-          path: head-tests
-          sparse-checkout: test/bijectors/equality.jl
-          sparse-checkout-cone-mode: false
-      - uses: actions/checkout@v7
-        with:
-          repository: TuringLang/DynamicPPL.jl
-          ref: c74dedf7790dc2e58a3e048b9dcab1a1f6f1fc34
-          path: dppl
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
-      - name: Set up test environment
-        id: setup
+      - name: Prepare the revised regression
         run: |
-          julia --project=target/test --color=yes -e '
+          cp target/test/bijectors/equality.jl original-equality.jl
+          git -C target apply ../patches/bijectors-review.patch
+      - name: Update the test environment
+        run: |
+          julia --project=target/test -e '
             using Pkg
             Pkg.develop(path=abspath("target"))
             Pkg.update()
             Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
-      - name: Check hashes and new assertions
-        run: julia --project=target/test --color=yes scripts/bijectors_hash_checks.jl 2>&1 | tee checks.log
-      - name: Set up DynamicPPL integration
-        id: integration
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
+      - name: Check the base in a fresh process
         run: |
-          julia --project=integration --color=yes -e '
-            using Pkg
-            Pkg.develop([PackageSpec(path=abspath("target")), PackageSpec(path=abspath("dppl"))])
-            Pkg.add(["Distributions", "OffsetArrays"])
-            Pkg.update()
-            Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
-      - name: Check fixed model transforms
+          git -C target checkout 77b23dfe22f908a531b5e56e9366205baaaa2484 -- src
+          git -C target diff --exit-code 77b23dfe22f908a531b5e56e9366205baaaa2484 -- src
+          julia --project=target/test scripts/bijectors_hash_review.jl base > base.log 2>&1
+          tail -3 base.log
+      - name: Check the PR in a fresh process
         run: |
-          julia --project=integration --color=yes -e '
-            include("scripts/dynamicppl_hash_dependencies.jl")
-            data = TOML.parsefile("results.toml")
-            bad = filter(data["observations"]) do row
-                haskey(row, "error") || (row["equal"] && (!row["hashes_agree"] || row["set_length"] != 1 || row["dict_lookup"] != 1))
-            end
-            println("Remaining hash failures: ", length(bad))
-            @assert (ENV["REVIEW_HEAD"] == "true" ? isempty(bad) : !isempty(bad))' 2>&1 | tee integration.log
-      - name: Run full suite
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log
+          git -C target checkout 11b05bb8ca4b6c23d2d194d040506ef8d2f47df2 -- src
+          git -C target diff --exit-code 11b05bb8ca4b6c23d2d194d040506ef8d2f47df2 -- src
+          julia --project=target/test scripts/bijectors_hash_review.jl head > head.log 2>&1
+          tail -3 head.log
+      - name: Reject a plausible incorrect hash
+        run: |
+          julia --project=target/test scripts/bijectors_hash_review.jl mutant > mutant.log 2>&1
+          tail -3 mutant.log
+      - name: Check formatting
+        if: matrix.version == '1.13.4'
+        run: |
+          julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
+          sha256sum target/test/bijectors/equality.jl > before.sha256
+          julia -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/test/bijectors/equality.jl")'
+          sha256sum -c before.sha256
+      - name: Run the full suite once
+        if: matrix.version == '1.13.4'
+        run: julia --project=target/test target/test/runtests.jl > suite.log 2>&1
       - uses: actions/upload-artifact@v6
-        if: ${{ !cancelled() }}
+        if: always()
         with:
-          name: bijectors-${{ matrix.version }}-${{ matrix.ref }}
+          name: bijectors-hash-review-${{ matrix.version }}
           path: |
             *.log
-            *.toml
             target/test/Project.toml
             target/test/Manifest*.toml
-            integration/Project.toml
-            integration/Manifest*.toml

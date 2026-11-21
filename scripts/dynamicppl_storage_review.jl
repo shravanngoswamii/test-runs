@@ -2,7 +2,7 @@ using AbstractPPL, BangBang, Distributions, DynamicPPL, ForwardDiff, Test
 using DynamicPPL.VarNamedTuples: templated_setindex!!
 using Random: Xoshiro
 using SparseArrays: sparse
-using StaticArrays: SVector
+using OffsetArrays: OffsetArray
 
 const HEAD = get(ENV, "REVIEW_HEAD", "false") == "true"
 println("Julia ", VERSION, ", DynamicPPL ", pkgversion(DynamicPPL), ", AbstractPPL ", pkgversion(AbstractPPL))
@@ -65,7 +65,7 @@ end
         for value in (true, Int8(1), UInt(2), big(3), 1//2, ForwardDiff.Dual(1.0, 1.0))
             @test_throws ArgumentError AbstractPPL.of(VarNamedTuple(; a=VarNamedTuple(; x=value)))
         end
-        for value in ("a", nothing, missing, (1.0, 2.0), view(zeros(2), :), SVector(1.0, 2.0), sparse([1.0, 0.0]), [[1.0], [2.0]])
+        for value in ("a", nothing, missing, (1.0, 2.0), view(zeros(2), :), OffsetArray([1.0, 2.0], 2:3), sparse([1.0, 0.0]), [[1.0], [2.0]])
             err = try
                 AbstractPPL.of(VarNamedTuple(; a=VarNamedTuple(; x=value)))
             catch err

@@ -14,7 +14,7 @@ expected = ENV["REVIEW_REVISION"] == "head" && pkgversion(AbstractPPL) < v"0.15.
 @testset "Loading with an allowed AbstractPPL version" begin
     @test (failure !== nothing) == expected
     if failure !== nothing
-        @test occursin("of", sprint(showerror, failure))
+        @test !isdefined(AbstractPPL, :of)
     else
         values = DynamicPPL.VarNamedTuple(; x=1.0)
         @test values[only(keys(values))] == 1.0

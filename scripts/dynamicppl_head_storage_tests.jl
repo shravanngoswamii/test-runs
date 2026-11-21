@@ -1,4 +1,5 @@
 using AbstractPPL, DynamicPPL, Test
+using DynamicPPL: DefaultContext, Condition, Fix
 using DynamicPPL.VarNamedTuples: templated_setindex!!
 
 source = read(joinpath(@__DIR__, "..", "head-tests", "test", "varnamedtuple.jl"), String)
@@ -22,9 +23,6 @@ end
         end
     end
 end
-include(joinpath(@__DIR__, "..", "target", "test", "varnamedtuple.jl"))
-if get(ENV, "REVIEW_HEAD", "false") == "true"
-    using Documenter, Distributions
-    Documenter.DocMeta.setdocmeta!(DynamicPPL, :DocTestSetup, :(using DynamicPPL, Distributions); recursive=true)
-    Documenter.doctest(DynamicPPL; manual=false, doctestfilters=[r"└ @ .+:[0-9]+"])
-end
+using Documenter, Distributions
+Documenter.DocMeta.setdocmeta!(DynamicPPL, :DocTestSetup, :(using DynamicPPL, Distributions); recursive=true)
+Documenter.doctest(DynamicPPL; manual=false, doctestfilters=[r"└ @ .+:[0-9]+"])

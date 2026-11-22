@@ -111,7 +111,7 @@ end
 
 if !isempty(MUTANT)
     @test run_regressions(TESTS) === nothing
-    summary = if MUTANT == "logit-equals"
+    contract_holds = if MUTANT == "logit-equals"
         isequal(Logit(NaN, 1.0), Logit(NaN, 1.0))
     else
         s = Stacked([identity])
@@ -120,7 +120,7 @@ if !isempty(MUTANT)
             typeof(s)(s.bs, s.ranges_in, [2:2], s.length_in, s.length_out)
         isequal(s, other) == (MUTANT == "all-stacked-fields")
     end
-    @test !summary
+    @test contract_holds === false
     println("Original assertions missed mutant: ", MUTANT)
 elseif HEAD
     @test run_regressions(TESTS) === nothing

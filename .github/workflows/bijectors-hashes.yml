@@ -14,6 +14,11 @@ on:
         description: Julia versions as a JSON list
         default: '["1.10.8", "1"]'
 
+      suite:
+        description: Run the full Bijectors suite
+        type: boolean
+        default: true
+
 permissions:
   contents: read
 
@@ -77,6 +82,7 @@ jobs:
             REVIEW_MUTANT="$mutant" julia --project=target/test --color=yes scripts/bijectors_current_hash_review.jl 2>&1 | tee "mutation-$mutant.log"
           done
       - name: Set up DynamicPPL integration
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         id: integration
         run: |
           julia --project=integration --color=yes -e '
@@ -87,9 +93,10 @@ jobs:
             Pkg.instantiate()
             Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
       - name: Check fixed model transforms
+        if: ${{ !cancelled() && steps.integration.outcome == 'success' }}
         run: julia --project=integration --color=yes scripts/bijectors_fixed_vector_review.jl 2>&1 | tee integration.log
       - name: Run full suite
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.suite && steps.setup.outcome == 'success' }}
         run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log
       - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}

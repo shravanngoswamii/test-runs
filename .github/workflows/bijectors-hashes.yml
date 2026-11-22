@@ -5,10 +5,10 @@ on:
   workflow_dispatch:
     inputs:
       base:
-        description: Base commit copied into test-runs
+        description: Base commit in Bijectors.jl
         required: true
       head:
-        description: Patched commit copied into test-runs
+        description: Patched commit in Bijectors.jl
         required: true
       versions:
         description: Julia versions as a JSON list
@@ -40,10 +40,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
+          repository: TuringLang/Bijectors.jl
           ref: ${{ matrix.ref }}
           path: target
       - uses: actions/checkout@v7
         with:
+          repository: TuringLang/Bijectors.jl
           ref: ${{ inputs.head }}
           path: head-tests
           sparse-checkout: test/bijectors/equality.jl
@@ -51,7 +53,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: TuringLang/DynamicPPL.jl
-          ref: c74dedf7790dc2e58a3e048b9dcab1a1f6f1fc34
+          ref: 702b8c0b6dc4241013a179abdae6ae66a00c3fda
           path: dppl
       - uses: julia-actions/setup-julia@v3
         with:
@@ -63,31 +65,29 @@ jobs:
           julia --project=target/test --color=yes -e '
             using Pkg
             Pkg.develop(path=abspath("target"))
-            Pkg.update()
+            Pkg.add(PackageSpec(name="Distributions", version=v"0.25.135"))
             Pkg.instantiate()
             Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
-      - name: Check hashes and new assertions
-        run: julia --project=target/test --color=yes scripts/bijectors_hash_checks.jl 2>&1 | tee checks.log
+      - name: Check examples and new assertions
+        run: julia --project=target/test --color=yes scripts/bijectors_current_hash_review.jl 2>&1 | tee checks.log
+      - name: Check what the assertions miss
+        if: ${{ matrix.ref == inputs.head }}
+        run: |
+          for mutant in all-stacked-fields omit-output-ranges logit-equals; do
+            REVIEW_MUTANT="$mutant" julia --project=target/test --color=yes scripts/bijectors_current_hash_review.jl 2>&1 | tee "mutation-$mutant.log"
+          done
       - name: Set up DynamicPPL integration
         id: integration
         run: |
           julia --project=integration --color=yes -e '
             using Pkg
             Pkg.develop([PackageSpec(path=abspath("target")), PackageSpec(path=abspath("dppl"))])
-            Pkg.add(["Distributions", "OffsetArrays"])
-            Pkg.update()
+            Pkg.add("Distributions")
+            Pkg.add(PackageSpec(name="Distributions", version=v"0.25.135"))
             Pkg.instantiate()
             Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
       - name: Check fixed model transforms
-        run: |
-          julia --project=integration --color=yes -e '
-            include("scripts/dynamicppl_hash_dependencies.jl")
-            data = TOML.parsefile("results.toml")
-            bad = filter(data["observations"]) do row
-                haskey(row, "error") || (row["equal"] && (!row["hashes_agree"] || row["set_length"] != 1 || row["dict_lookup"] != 1))
-            end
-            println("Remaining hash failures: ", length(bad))
-            @assert (ENV["REVIEW_HEAD"] == "true" ? isempty(bad) : !isempty(bad))' 2>&1 | tee integration.log
+        run: julia --project=integration --color=yes scripts/bijectors_fixed_vector_review.jl 2>&1 | tee integration.log
       - name: Run full suite
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: julia --project=target/test --color=yes target/test/runtests.jl 2>&1 | tee suite.log

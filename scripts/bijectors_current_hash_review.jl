@@ -1,4 +1,5 @@
 using Bijectors, Distributions, Test
+using FillArrays: Fill
 using Bijectors: Shift, Scale, Logit, Inverse, TruncatedBijector, Permute, PlanarLayer,
     RadialLayer, InvertibleBatchNorm, Stacked, SimplexBijector, PDBijector
 
@@ -57,7 +58,7 @@ println("Julia ", VERSION, " | Bijectors ", pkgversion(Bijectors), " | Distribut
         "mixed" => d,
         "reshaped mixed" => reshape(d, (1, 2)),
         "nested product" => product_distribution([d, deepcopy(d)]),
-        "homogeneous fill" => product_distribution(Bijectors.FillArrays.Fill(Beta(), 2)),
+        "homogeneous fill" => product_distribution(Fill(Beta(), 2)),
     ), f in (VB.to_vec, VB.from_vec, VB.to_linked_vec, VB.from_linked_vec)
         record("$label $f", f(dist), f(deepcopy(dist)))
     end

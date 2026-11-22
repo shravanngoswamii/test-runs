@@ -35,6 +35,7 @@ jobs:
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '2'
+      JULIA_PKG_PRECOMPILE_AUTO: '0'
       REVIEW_ENZYME_CASE: ${{ inputs.case }}
     steps:
       - uses: actions/checkout@v7
@@ -52,8 +53,13 @@ jobs:
           julia --project=target/test/integration_tests/enzyme -e '
             using Pkg
             Pkg.develop(path=abspath("target"))
-            Pkg.update()
-            Pkg.add([PackageSpec(name=name, version=version) for (name, version) in (("Enzyme", v"0.13.221"), ("EnzymeCore", v"0.8.28"), ("Enzyme_jll", v"0.0.310"), ("Distributions", v"0.25.135"), ("DifferentiationInterface", v"0.7.22"), ("ForwardDiff", v"1.5.0"))])
+            Pkg.instantiate()
+            versions = Dict(dep.name => dep.version for dep in values(Pkg.dependencies()))
+            for (name, expected) in (("Enzyme", v"0.13.221"), ("EnzymeCore", v"0.8.28"),
+                    ("Enzyme_jll", v"0.0.310+0"), ("Distributions", v"0.25.135"),
+                    ("DifferentiationInterface", v"0.7.22"), ("ForwardDiff", v"1.5.0"))
+                @assert versions[name] == expected (name, versions[name], expected)
+            end
             Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)'
       - name: Reproduce the Enzyme case
         run: julia --project=target/test/integration_tests/enzyme scripts/bijectors_enzyme_check.jl 2>&1 | tee enzyme-check.log

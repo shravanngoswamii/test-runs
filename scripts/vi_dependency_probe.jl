@@ -19,11 +19,13 @@ println("Optimisers ", pkgversion(Optimisers), ", ReverseDiff ", pkgversion(Reve
             println(family, ": ", sprint(showerror, err))
             err
         end
-        if ARGS[2] == "fails"
-            @test outcome isa MethodError
+        kind = outcome isa MethodError ? :method_error : outcome isa Turing.Variational.VIResult ? :success : :other
+        println(family, ": ", kind)
+        if ARGS[2] == "fails" && family === q_fullrank_gaussian
+            @test kind === :method_error
             @test occursin("Float64(::ForwardDiff.Dual", sprint(showerror, outcome))
         else
-            @test outcome isa Turing.Variational.VIResult
+            @test kind === :success
         end
     end
 end

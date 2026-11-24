@@ -1,60 +1,64 @@
 name: Review follow-up
-run-name: Check the full observation suite with deprecation warnings enabled
-
+run-name: Isolate the Turing VI failure across source and Optimisers versions
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 defaults:
   run:
     shell: bash
-
 jobs:
-  observations:
+  vi_dependency:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 40
     env:
-      JULIA_NUM_THREADS: '2'
+      JULIA_NUM_THREADS: '1'
       JULIA_NUM_PRECOMPILE_TASKS: '2'
-      GROUP: All
-      AQUA: 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          repository: TuringLang/DynamicPPL.jl
-          ref: 956dded2778d6cd3842179c6044b0c7e617a1432
+          repository: TuringLang/Turing.jl
+          ref: 60e25df62272f85dd403b8760136849c9d33c5f7
+          fetch-depth: 0
           path: target
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1.13.4'
       - uses: julia-actions/cache@v3
-      - name: Update the test environment
+      - name: Update the probe environment
         run: |
-          julia --project=target/test -e '
+          julia --project=probe -e '
             using Pkg
             Pkg.develop(path=abspath("target"))
+            Pkg.add(["ReverseDiff", "Optimisers", "AdvancedVI", "ForwardDiff"])
             Pkg.update()
-            Pkg.instantiate()
             Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' > setup.log 2>&1
-      - name: Isolate the failure on main
+          cp probe/Manifest.toml latest-Manifest.toml
+      - name: Reproduce on main
         run: |
-          julia --project=target/test scripts/deprecation_review.jl base > base-depwarn-no.log 2>&1
-          julia --depwarn=yes --project=target/test scripts/deprecation_review.jl base > base-depwarn-yes.log 2>&1
-      - name: Isolate the failure on the fix
+          git -C target checkout 168dbea1d2ca555cf21064bd5d438e625658f363 -- src ext
+          git -C target diff --exit-code 168dbea1d2ca555cf21064bd5d438e625658f363 -- src ext
+          julia --project=probe scripts/vi_dependency_probe.jl main fails > base.log 2>&1
+      - name: Reproduce on the PR
         run: |
-          git -C target apply ../patches/dppl-review.patch
-          julia --project=target/test scripts/deprecation_review.jl head > head-depwarn-no.log 2>&1
-          julia --depwarn=yes --project=target/test scripts/deprecation_review.jl head > head-depwarn-yes.log 2>&1
-      - name: Run the full DynamicPPL suite
-        run: julia --startup-file=no --depwarn=yes --warn-overwrite=yes --project=target/test target/test/runtests.jl > suite.log 2>&1
+          git -C target checkout 60e25df62272f85dd403b8760136849c9d33c5f7 -- src ext
+          julia --project=probe scripts/vi_dependency_probe.jl head fails > head.log 2>&1
+      - name: Check the previous Optimisers release
+        run: |
+          julia --project=probe -e 'using Pkg; Pkg.add(PackageSpec(name="Optimisers", version=v"0.4.12")); Pkg.pin("Optimisers")' > setup-0.4.12.log 2>&1
+          julia --project=probe scripts/vi_dependency_probe.jl head passes > control-0.4.12.log 2>&1
+          cp probe/Manifest.toml control-0.4.12-Manifest.toml
+      - name: Check the version used by the green CI run
+        run: |
+          julia --project=probe -e 'using Pkg; Pkg.free("Optimisers"); Pkg.add(PackageSpec(name="Optimisers", version=v"0.4.11")); Pkg.pin("Optimisers")' > setup-0.4.11.log 2>&1
+          julia --project=probe scripts/vi_dependency_probe.jl head passes > control-0.4.11.log 2>&1
+          cp probe/Manifest.toml control-0.4.11-Manifest.toml
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: observation-review-depwarn
+          name: vi-dependency-probe
           path: |
             *.log
-            target/test/Project.toml
-            target/test/Manifest*.toml
+            *Manifest.toml
+            probe/Project.toml

@@ -1,5 +1,5 @@
 name: Review follow-up
-run-name: Check observation validation and sampler documentation reviews
+run-name: Check the full observation suite with deprecation warnings enabled
 
 on:
   workflow_dispatch:
@@ -15,11 +15,6 @@ jobs:
   observations:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        julia: ['1.10.8', '1.13.4']
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '2'
@@ -31,17 +26,11 @@ jobs:
         with:
           repository: TuringLang/DynamicPPL.jl
           ref: 956dded2778d6cd3842179c6044b0c7e617a1432
-          fetch-depth: 0
           path: target
       - uses: julia-actions/setup-julia@v3
         with:
-          version: ${{ matrix.julia }}
+          version: '1.13.4'
       - uses: julia-actions/cache@v3
-      - name: Prepare the reviewed tests
-        run: |
-          git -C target apply ../patches/dppl-review.patch
-          cp target/test/debug_utils.jl head-debug-tests.jl
-          git -C target checkout HEAD -- src ext
       - name: Update the test environment
         run: |
           julia --project=target/test -e '
@@ -49,124 +38,23 @@ jobs:
             Pkg.develop(path=abspath("target"))
             Pkg.update()
             Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
-      - name: Check current main
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' > setup.log 2>&1
+      - name: Isolate the failure on main
         run: |
-          git -C target diff --exit-code 956dded2778d6cd3842179c6044b0c7e617a1432 -- src ext
-          julia --project=target/test scripts/observation_review.jl base > base.log 2>&1
-          tail -8 base.log
-      - name: Check the previous PR source
+          julia --project=target/test scripts/deprecation_review.jl base > base-depwarn-no.log 2>&1
+          julia --depwarn=yes --project=target/test scripts/deprecation_review.jl base > base-depwarn-yes.log 2>&1
+      - name: Isolate the failure on the fix
         run: |
-          git -C target checkout 714543fb6a422a41de5466e1050951274ee8cbca -- src ext
-          git -C target diff --exit-code 714543fb6a422a41de5466e1050951274ee8cbca -- src ext
-          julia --project=target/test scripts/observation_review.jl previous > previous.log 2>&1
-          tail -8 previous.log
-      - name: Check the revised implementation
-        run: |
-          git -C target checkout 956dded2778d6cd3842179c6044b0c7e617a1432 -- src ext
-          git -C target apply --include=src/debug_utils.jl ../patches/dppl-review.patch
-          julia --project=target/test scripts/observation_review.jl head > head.log 2>&1
-          tail -8 head.log
-          julia --project=target/test target/test/debug_utils.jl > debug-utils.log 2>&1
-      - name: Check formatting
-        if: matrix.julia == '1.13.4'
-        run: |
-          julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
-          sha256sum target/src/debug_utils.jl target/test/debug_utils.jl target/HISTORY.md > before.sha256
-          julia -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format(["target/src/debug_utils.jl", "target/test/debug_utils.jl", "target/HISTORY.md"])'
-          sha256sum -c before.sha256
+          git -C target apply ../patches/dppl-review.patch
+          julia --project=target/test scripts/deprecation_review.jl head > head-depwarn-no.log 2>&1
+          julia --depwarn=yes --project=target/test scripts/deprecation_review.jl head > head-depwarn-yes.log 2>&1
       - name: Run the full DynamicPPL suite
-        if: matrix.julia == '1.13.4'
-        run: julia --project=target/test target/test/runtests.jl > suite.log 2>&1
+        run: julia --startup-file=no --depwarn=yes --warn-overwrite=yes --project=target/test target/test/runtests.jl > suite.log 2>&1
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: observation-review-${{ matrix.julia }}
+          name: observation-review-depwarn
           path: |
             *.log
-            *-values.toml
             target/test/Project.toml
             target/test/Manifest*.toml
-
-  sampler_docs:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-    env:
-      JULIA_NUM_THREADS: '2'
-      JULIA_NUM_PRECOMPILE_TASKS: '2'
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
-        with:
-          repository: TuringLang/Turing.jl
-          ref: abf6b635b46194ca90dedd6ddd1c3a6313fff7ca
-          path: target
-      - uses: julia-actions/setup-julia@v3
-        with:
-          version: '1.13.4'
-      - uses: julia-actions/cache@v3
-      - name: Update the documentation environment
-        run: |
-          julia --project=target/docs -e '
-            using Pkg
-            Pkg.develop(path=abspath("target"))
-            Pkg.update()
-            Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
-      - name: Check the reviewer's claims before the edit
-        run: julia --project=target/docs scripts/sampler_review.jl previous > previous.log 2>&1
-      - name: Apply the docstring edit
-        run: |
-          git -C target apply ../patches/turing-review.patch
-          python3 - <<'PY'
-          from pathlib import Path
-          import subprocess
-          path = 'src/mcmc/hmc.jl'
-          old = subprocess.check_output(['git', '-C', 'target', 'show', f'HEAD:{path}'], text=True)
-          new = Path('target', path).read_text()
-          def runtime(s):
-              start = s.index('"""\n    sample([rng,]')
-              end = s.index('function AbstractMCMC.sample(', start)
-              return s[:start] + s[end:]
-          assert runtime(old) == runtime(new)
-          print('Runtime source is byte-identical.')
-          PY
-      - name: Check the claims and help after the edit
-        run: julia --project=target/docs scripts/sampler_review.jl head > head.log 2>&1
-      - name: Check formatting
-        run: |
-          julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
-          sha256sum target/src/mcmc/hmc.jl > before.sha256
-          julia -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
-          sha256sum -c before.sha256
-      - name: Build and inspect the API documentation
-        run: |
-          julia --project=target/docs target/docs/make.jl > docs.log 2>&1
-          python3 - <<'PY'
-          from pathlib import Path
-          from html import unescape
-          import re
-          page = Path('target/docs/build/api/Inference/index.html').read_text()
-          section = page[page.index('Draw <code>N</code> samples from'):]
-          section = section[:section.index('docs-sourcelink')]
-          items = re.findall(r'<li>(.*?)</li>', section, re.S)
-          assert len(items) == 3
-          assert all(item.count('<p>') <= 1 for item in items)
-          text = ' '.join(unescape(re.sub('<[^>]+>', '', section)).split())
-          assert 'never adapt, regardless of nadapts' in text
-          assert 'discard_initial=discard_adapt ? nadapts : 0' in text
-          assert 'in addition to the N returned' in text
-          assert 'these keywords are ignored' in text
-          assert 'https://turinglang.org/docs/usage/sampling-options/' in section
-          print('All three keyword bullets and the resume paragraph render correctly.')
-          PY
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: sampler-docs-review
-          path: |
-            *.log
-            *-help.txt
-            *-values.toml
-            target/docs/Manifest*.toml
-            target/docs/build/

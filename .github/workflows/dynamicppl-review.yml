@@ -1,5 +1,5 @@
-name: Turing sampling docs
-run-name: Check sampling documentation paragraphs
+name: Review follow-up
+run-name: Check observation validation and sampler documentation reviews
 
 on:
   workflow_dispatch:
@@ -12,9 +12,85 @@ defaults:
     shell: bash
 
 jobs:
-  api:
+  observations:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        julia: ['1.10.8', '1.13.4']
+    env:
+      JULIA_NUM_THREADS: '2'
+      JULIA_NUM_PRECOMPILE_TASKS: '2'
+      GROUP: All
+      AQUA: 'true'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/DynamicPPL.jl
+          ref: 956dded2778d6cd3842179c6044b0c7e617a1432
+          fetch-depth: 0
+          path: target
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.julia }}
+      - uses: julia-actions/cache@v3
+      - name: Prepare the reviewed tests
+        run: |
+          git -C target apply ../patches/dppl-review.patch
+          cp target/test/debug_utils.jl head-debug-tests.jl
+          git -C target checkout HEAD -- src ext
+      - name: Update the test environment
+        run: |
+          julia --project=target/test -e '
+            using Pkg
+            Pkg.develop(path=abspath("target"))
+            Pkg.update()
+            Pkg.instantiate()
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
+      - name: Check current main
+        run: |
+          git -C target diff --exit-code 956dded2778d6cd3842179c6044b0c7e617a1432 -- src ext
+          julia --project=target/test scripts/observation_review.jl base > base.log 2>&1
+          tail -8 base.log
+      - name: Check the previous PR source
+        run: |
+          git -C target checkout 714543fb6a422a41de5466e1050951274ee8cbca -- src ext
+          git -C target diff --exit-code 714543fb6a422a41de5466e1050951274ee8cbca -- src ext
+          julia --project=target/test scripts/observation_review.jl previous > previous.log 2>&1
+          tail -8 previous.log
+      - name: Check the revised implementation
+        run: |
+          git -C target checkout 956dded2778d6cd3842179c6044b0c7e617a1432 -- src ext
+          git -C target apply --include=src/debug_utils.jl ../patches/dppl-review.patch
+          julia --project=target/test scripts/observation_review.jl head > head.log 2>&1
+          tail -8 head.log
+          julia --project=target/test target/test/debug_utils.jl > debug-utils.log 2>&1
+      - name: Check formatting
+        if: matrix.julia == '1.13.4'
+        run: |
+          julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
+          sha256sum target/src/debug_utils.jl target/test/debug_utils.jl target/HISTORY.md > before.sha256
+          julia -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format(["target/src/debug_utils.jl", "target/test/debug_utils.jl", "target/HISTORY.md"])'
+          sha256sum -c before.sha256
+      - name: Run the full DynamicPPL suite
+        if: matrix.julia == '1.13.4'
+        run: julia --project=target/test target/test/runtests.jl > suite.log 2>&1
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: observation-review-${{ matrix.julia }}
+          path: |
+            *.log
+            *-values.toml
+            target/test/Project.toml
+            target/test/Manifest*.toml
+
+  sampler_docs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '2'
@@ -23,129 +99,74 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: TuringLang/Turing.jl
-          ref: 168dbea1d2ca555cf21064bd5d438e625658f363
+          ref: abf6b635b46194ca90dedd6ddd1c3a6313fff7ca
           path: target
       - uses: julia-actions/setup-julia@v3
         with:
           version: '1.13.4'
       - uses: julia-actions/cache@v3
-      - name: Apply documentation patch
-        run: git -C target apply ../patches/turing-sampler-keyword-docs.patch
-      - name: Check formatting
+      - name: Update the documentation environment
         run: |
-          julia --color=yes -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
-          sha256sum target/src/mcmc/hmc.jl > formatter-before.sha256
-          julia --color=yes -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
-          sha256sum -c formatter-before.sha256
-      - name: Update documentation environment
-        run: |
-          julia --project=target/docs --color=yes -e '
+          julia --project=target/docs -e '
             using Pkg
             Pkg.develop(path=abspath("target"))
             Pkg.update()
             Pkg.instantiate()
-            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee docs-setup.log
-      - name: Build API documentation
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' 2>&1 | tee setup.log
+      - name: Check the reviewer's claims before the edit
+        run: julia --project=target/docs scripts/sampler_review.jl previous > previous.log 2>&1
+      - name: Apply the docstring edit
         run: |
-          julia --project=target/docs --color=yes target/docs/make.jl 2>&1 | tee head-docs.log
+          git -C target apply ../patches/turing-review.patch
           python3 - <<'PY'
           from pathlib import Path
-          from html.parser import HTMLParser
+          import subprocess
+          path = 'src/mcmc/hmc.jl'
+          old = subprocess.check_output(['git', '-C', 'target', 'show', f'HEAD:{path}'], text=True)
+          new = Path('target', path).read_text()
+          def runtime(s):
+              start = s.index('"""\n    sample([rng,]')
+              end = s.index('function AbstractMCMC.sample(', start)
+              return s[:start] + s[end:]
+          assert runtime(old) == runtime(new)
+          print('Runtime source is byte-identical.')
+          PY
+      - name: Check the claims and help after the edit
+        run: julia --project=target/docs scripts/sampler_review.jl head > head.log 2>&1
+      - name: Check formatting
+        run: |
+          julia -e 'using Pkg; Pkg.add(PackageSpec(name="JuliaFormatter", version="1.0.62"))'
+          sha256sum target/src/mcmc/hmc.jl > before.sha256
+          julia -e 'using JuliaFormatter; @assert pkgversion(JuliaFormatter) == v"1.0.62"; format("target/src/mcmc/hmc.jl")'
+          sha256sum -c before.sha256
+      - name: Build and inspect the API documentation
+        run: |
+          julia --project=target/docs target/docs/make.jl > docs.log 2>&1
+          python3 - <<'PY'
+          from pathlib import Path
+          from html import unescape
           import re
-          class Paragraphs(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.lists = 0
-                  self.found = False
-              def handle_starttag(self, tag, attrs):
-                  if tag == 'li': self.lists += 1
-              def handle_endtag(self, tag):
-                  if tag == 'li': self.lists -= 1
-              def handle_data(self, data):
-                  if 'The returned chain still contains' in data:
-                      assert self.lists == 0
-                      self.found = True
-          html = Path('target/docs/build/api/Inference/index.html').read_text()
-          parser = Paragraphs()
-          parser.feed(html)
-          assert parser.found
-          assert 'NUTS(0, δ)' in html and 'HMCDA(0, δ, λ)' in html
-          assert 'Keyword Arguments' in html
-          section = html[html.index('Draw <code>N</code> samples from'):]
+          page = Path('target/docs/build/api/Inference/index.html').read_text()
+          section = page[page.index('Draw <code>N</code> samples from'):]
           section = section[:section.index('docs-sourcelink')]
           items = re.findall(r'<li>(.*?)</li>', section, re.S)
           assert len(items) == 3
           assert all(item.count('<p>') <= 1 for item in items)
-          assert 'NUTS(0, δ)' in items[0]
-          assert 'Set this to' in items[1]
-          assert 'A nonnegative value' in items[2]
-          print('Each keyword renders as one compact list item.')
+          text = ' '.join(unescape(re.sub('<[^>]+>', '', section)).split())
+          assert 'never adapt, regardless of nadapts' in text
+          assert 'discard_initial=discard_adapt ? nadapts : 0' in text
+          assert 'in addition to the N returned' in text
+          assert 'these keywords are ignored' in text
+          assert 'https://turinglang.org/docs/usage/sampling-options/' in section
+          print('All three keyword bullets and the resume paragraph render correctly.')
           PY
       - uses: actions/upload-artifact@v6
         if: always()
         with:
-          name: adaptive-sampling-api
+          name: sampler-docs-review
           path: |
             *.log
+            *-help.txt
+            *-values.toml
             target/docs/Manifest*.toml
             target/docs/build/
-  render:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
-        with:
-          repository: TuringLang/docs
-          ref: 5c36b7a3718b0d9bd0e8a478260148e11ee057ba
-          path: target
-      - uses: quarto-dev/quarto-actions/setup@v2
-        with:
-          version: '1.11.9'
-      - name: Select the Markdown engine for this prose check
-        run: |
-          python3 - <<'PYTHON'
-          from pathlib import Path
-          path = Path('target/usage/sampling-options/index.qmd')
-          text = path.read_text()
-          assert text.count('engine: julia') == 1
-          path.write_text(text.replace('engine: julia', 'engine: markdown', 1))
-          PYTHON
-      - name: Apply the guide patch
-        run: |
-          git -C target apply ../patches/turing-adaptive-sampling-guide.patch
-          python3 - <<'PYTHON'
-          from pathlib import Path
-          import re, subprocess
-          path = 'usage/sampling-options/index.qmd'
-          base = subprocess.check_output(['git', '-C', 'target', 'show', f'HEAD:{path}'], text=True)
-          head = Path('target', path).read_text()
-          assert re.findall(r'```.*?```', base, re.S) == re.findall(r'```.*?```', head, re.S)
-          print('Every code block is unchanged.')
-          PYTHON
-      - name: Render the updated page
-        working-directory: target
-        run: |
-          quarto --version
-          quarto render usage/sampling-options/index.qmd --no-execute --metadata engine:markdown 2>&1 | tee ../head-guide.log
-          test -s _site/usage/sampling-options/index.html
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-          html = Path('_site/usage/sampling-options/index.html').read_text()
-          assert html.index('If the constructor omits') < html.index('Warmup steps and')
-          assert 'Without an explicit count' not in html
-          paragraphs = re.findall(r'<p>(.*?)</p>', html, re.S)
-          defaults = next(p for p in paragraphs if p.startswith('The defaults for'))
-          discard = next(p for p in paragraphs if p.startswith('By default, <code>discard_adapt'))
-          assert 'If the constructor omits' in defaults
-          assert 'Set <code>discard_adapt=false</code>' in discard
-          print('The adaptation and discard explanations each render as one paragraph.')
-          PY
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: sampling-guide-render
-          path: |
-            *-guide.log
-            target/_site/

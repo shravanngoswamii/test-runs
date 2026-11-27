@@ -1,0 +1,46 @@
+name: Turing mode likelihood
+
+on:
+  push:
+    branches: [sg/check-mode-likelihood]
+    paths:
+      - .github/workflows/turing-mode-likelihood.yml
+      - fixtures/turing-mode-likelihood/**
+
+jobs:
+  tests:
+    name: ${{ matrix.shard.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - {name: Gibbs, args: "mcmc/gibbs.jl", optimization: 1}
+          - {name: Inference, args: "mcmc/Inference.jl", optimization: 1}
+          - {name: AD, args: "ad.jl", optimization: 1}
+          - {name: Remaining tests, args: "--skip mcmc/gibbs.jl mcmc/Inference.jl ad.jl", optimization: 2}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: shravanngoswamii/Turing.jl
+          ref: f967c92432413cd1e5aa91119b367767ef617594
+          path: turing
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13.3'
+      - name: Apply the review changes
+        run: git -C turing apply "$GITHUB_WORKSPACE/fixtures/turing-mode-likelihood/change.patch"
+      - name: Install the reviewed environment
+        env:
+          JULIA_PKG_PRECOMPILE_AUTO: '0'
+        run: julia --startup-file=no --project=fixtures/turing-mode-likelihood -e 'using Pkg; Pkg.instantiate()'
+      - name: Run the test shard
+        env:
+          SHARD_ARGS: ${{ matrix.shard.args }}
+          JULIA_OPTIMIZATION: ${{ matrix.shard.optimization }}
+          JULIA_NUM_THREADS: '2'
+          JULIA_NUM_PRECOMPILE_TASKS: '2'
+        run: |
+          read -r -a test_args <<< "$SHARD_ARGS"
+          julia --startup-file=no --check-bounds=yes --depwarn=yes "-O$JULIA_OPTIMIZATION" --project=fixtures/turing-mode-likelihood turing/test/runtests.jl "${test_args[@]}"

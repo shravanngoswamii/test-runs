@@ -1,0 +1,67 @@
+diff --git a/HISTORY.md b/HISTORY.md
+index 54fd121c1..ddc315e5a 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -2,7 +2,7 @@
+ 
+   - `MH(cov_matrix)` no longer checks gradients at initialization, and gradient-free external samplers can use `adtype=ADTypes.NoAutoDiff()` ([#2920](https://github.com/TuringLang/Turing.jl/pull/2920)).
+   - `MH(cov_matrix)` rejects discrete variables, and `Gibbs` checks each component's support for discrete variables ([#2921](https://github.com/TuringLang/Turing.jl/pull/2921)).
+-  - `loglikelihood` on a MAP result returns the log likelihood at the fitted parameters ([#2926](https://github.com/TuringLang/Turing.jl/pull/2926)).
++  - `loglikelihood` of a MAP result now returns the log likelihood at the fitted parameters. It previously returned the log joint ([#2926](https://github.com/TuringLang/Turing.jl/pull/2926)).
+ 
+ # 0.49.0
+ 
+diff --git a/src/optimisation/Optimisation.jl b/src/optimisation/Optimisation.jl
+index 42d96f371..d22ef85fd 100644
+--- a/src/optimisation/Optimisation.jl
++++ b/src/optimisation/Optimisation.jl
+@@ -76,10 +76,8 @@ struct ModeResult{
+     "Dictionary of parameter values. These values are always provided in unlinked space,
+     even if the optimisation was run in linked space."
+     params::P
+-    "The final log likelihood or log joint, depending on whether `MAP` or `MLE` was run.
+-    Note that this is the actual log probability of the parameters, i.e., not negated;
+-    we do need a negated log probability to run the optimisation itself (since it is a
+-    maximisation), but this is handled in a way that is entirely transparent to the user."
++    "The log likelihood for `MLE` or the log joint for `MAP`, evaluated at the fitted
++    parameters."
+     lp::LP
+     "Whether the optimisation was done in a transformed space."
+     linked::Bool
+diff --git a/src/optimisation/stats.jl b/src/optimisation/stats.jl
+index 7d7c88335..87c2bff97 100644
+--- a/src/optimisation/stats.jl
++++ b/src/optimisation/stats.jl
+@@ -179,7 +179,7 @@ StatsBase.coef(m::ModeResult) = last(vector_names_and_params(m))
+ StatsBase.coefnames(m::ModeResult) = first(vector_names_and_params(m))
+ StatsBase.params(m::ModeResult) = StatsBase.coefnames(m)
+ StatsBase.vcov(m::ModeResult) = inv(StatsBase.informationmatrix(m))
+-StatsBase.loglikelihood(m::ModeResult) = m.lp
+-function StatsBase.loglikelihood(m::ModeResult{MAP})
++StatsBase.loglikelihood(m::ModeResult{MLE}) = m.lp
++function StatsBase.loglikelihood(m::ModeResult)
+     return DynamicPPL.loglikelihood(m.ldf.model, m.params)
+ end
+diff --git a/test/optimisation/Optimisation.jl b/test/optimisation/Optimisation.jl
+index b2c49866e..bc82c8786 100644
+--- a/test/optimisation/Optimisation.jl
++++ b/test/optimisation/Optimisation.jl
+@@ -442,7 +442,6 @@ end
+             check_success(m4)
+             check_success(m5)
+             check_success(m6)
+-            @test StatsBase.loglikelihood(m2) ≈ loglikelihood(GDEMO_DEFAULT, m2.params)
+ 
+             @test !hasstats(m2) || m2.optim_result.stats.iterations <= 1
+             if hasstats(m6) && hasstats(m5)
+@@ -496,7 +495,9 @@ end
+             check_success(m4)
+             check_success(m5)
+             check_success(m6)
+-            @test StatsBase.loglikelihood(m2) ≈ loglikelihood(GDEMO_DEFAULT, m2.params)
++            @test isapprox(
++                loglikelihood(m2), loglikelihood(GDEMO_DEFAULT, true_value), atol=0.01
++            )
+ 
+             @test !hasstats(m2) || m2.optim_result.stats.iterations <= 1
+             if hasstats(m6) && hasstats(m5)

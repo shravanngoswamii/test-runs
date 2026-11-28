@@ -27,24 +27,100 @@ index 682af00d1..f56fa016a 100644
  ### Conditioned variables are observations
  
 diff --git a/HISTORY.md b/HISTORY.md
-index fd8e6401b..b3e5d3fa1 100644
+index fd8e6401b..85c2801b2 100644
 --- a/HISTORY.md
 +++ b/HISTORY.md
-@@ -1,6 +1,8 @@
- # Unreleased
+@@ -1,6 +1,10 @@
+-# Unreleased
++# 0.49.1 (unreleased)
  
 -  - DynamicPPL 0.43 is now the minimum. ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915))
-+DynamicPPL 0.43 is now the minimum ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915)).
-+
-+Gibbs again supports latent variables passed as `missing` in model arguments ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915)).
++  - `MH(cov_matrix)` no longer checks gradients at initialization, and gradient-free external samplers can use `adtype=ADTypes.NoAutoDiff()` ([#2920](https://github.com/TuringLang/Turing.jl/pull/2920)).
++  - `MH(cov_matrix)` rejects discrete variables, and `Gibbs` checks each component's support for discrete variables ([#2921](https://github.com/TuringLang/Turing.jl/pull/2921)).
++  - `loglikelihood` of a MAP result now returns the log likelihood at the fitted parameters. It previously returned the log joint ([#2926](https://github.com/TuringLang/Turing.jl/pull/2926)).
++  - DynamicPPL 0.43 is now the minimum ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915)).
++  - Gibbs again supports latent variables passed as `missing` in model arguments ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915)).
  
  # 0.49.0
  
+diff --git a/Project.toml b/Project.toml
+index 97bbebcae..651fc0e53 100644
+--- a/Project.toml
++++ b/Project.toml
+@@ -1,6 +1,6 @@
+ name = "Turing"
+ uuid = "fce5fe82-541a-59a6-adf8-730c64b5f9a0"
+-version = "0.49.0"
++version = "0.49.1"
+ 
+ [deps]
+ ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
+@@ -46,7 +46,7 @@ TuringDynamicHMCExt = "DynamicHMC"
+ TuringMCMCChainsExt = "MCMCChains"
+ 
+ [compat]
+-ADTypes = "1.9"
++ADTypes = "1.18"
+ AbstractMCMC = "5.13"
+ AbstractPPL = "0.15"
+ Accessors = "0.1"
+diff --git a/src/mcmc/external_sampler.jl b/src/mcmc/external_sampler.jl
+index 206c2d1fb..37efc4965 100644
+--- a/src/mcmc/external_sampler.jl
++++ b/src/mcmc/external_sampler.jl
+@@ -154,6 +154,8 @@ Wrap a sampler so it can be used as an inference algorithm.
+ # Keyword Arguments
+ - `adtype::ADTypes.AbstractADType=ADTypes.AutoForwardDiff()`: The automatic differentiation
+   (AD) backend to use.
++
++  Use `ADTypes.NoAutoDiff()` for samplers that do not need gradients.
+ - `unconstrained::Bool=AbstractMCMC.requires_unconstrained_space(sampler)`: Whether the
+   sampler requires unconstrained space.
+ """
+@@ -246,7 +248,11 @@ function _external_first_step(
+         model,
+         DynamicPPL.getlogjoint_internal,
+         tfm_strategy;
+-        adtype=sampler_wrapper.adtype,
++        adtype=if sampler_wrapper.adtype isa ADTypes.NoAutoDiff
++            nothing
++        else
++            sampler_wrapper.adtype
++        end,
+         fix_transforms=fix_transforms,
+     )
+     x = find_initial_params_ldf(rng, f, initial_params)
 diff --git a/src/mcmc/gibbs.jl b/src/mcmc/gibbs.jl
-index f95a34a65..8ea989cfc 100644
+index f95a34a65..764632f28 100644
 --- a/src/mcmc/gibbs.jl
 +++ b/src/mcmc/gibbs.jl
-@@ -1166,59 +1166,12 @@ invisible to two separate callers, so both ask here.
+@@ -732,8 +732,6 @@ end
+ # `GibbsState`, which do not exist; without this, nesting fails with a `MethodError` several
+ # steps in rather than at construction.
+ supports_gibbs(::Gibbs) = false
+-# TODO(penelopeysm): `allow_discrete_variables(::Gibbs)` could be smarter, since a component
+-# may not allow discrete variables even though Gibbs itself does.
+ 
+ function Gibbs(algs::Pair...)
+     return Gibbs(map(first, algs), map(last, algs))
+@@ -793,6 +791,16 @@ function check_block_nonempty(varnames, block)
+     )
+ end
+ 
++function check_block_discrete(sampler, block)
++    allow_discrete_variables(sampler) && return nothing
++    for (vn, (dist, _)) in block.layout
++        dist isa DiscreteDistribution || continue
++        msg = "The $(_component_name(sampler)) component cannot sample discrete variable $(vn)."
++        throw(ArgumentError(msg))
++    end
++    return nothing
++end
++
+ """
+     block_fingerprint(snapshot, varnames)
+ 
+@@ -1166,59 +1174,12 @@ invisible to two separate callers, so both ask here.
  """
  model_argument_values(model::DynamicPPL.Model) = merge(model.args, model.defaults)
  
@@ -104,6 +180,25 @@ index f95a34a65..8ea989cfc 100644
      _, accs = DynamicPPL.init!!(
          rng, model, _snapshot_accs(), initial_params, DynamicPPL.UnlinkAll()
      )
+@@ -1303,7 +1264,9 @@ function gibbs_initialstep_recursive(
+     sampler, samplers_tail... = samplers
+ 
+     # Construct the conditioned model.
+-    check_block_nonempty(varnames, block_leaves(snapshot.values, varnames))
++    current_block = block_fingerprint(snapshot, varnames)
++    check_block_nonempty(varnames, current_block.leaves)
++    check_block_discrete(sampler, current_block)
+     conditioned = conditioned_values(snapshot.values, varnames)
+     conditioned_model = DynamicPPL.condition(model, conditioned)
+ 
+@@ -1434,6 +1397,7 @@ function gibbs_step_recursive(
+     # goes to the `ReshapedBlock` method, which throws unless the sampler implements it.
+     current_block = block_fingerprint(snapshot, varnames)
+     check_block_nonempty(varnames, current_block.leaves)
++    check_block_discrete(sampler, current_block)
+     reshaped = block_reshaped(block, current_block, keeps_linked_layout(sampler))
+     state = if reshaped === nothing
+         gibbs_update_state!!(sampler, state, conditioned_model, snapshot.values)
 diff --git a/src/mcmc/gibbs_conditional.jl b/src/mcmc/gibbs_conditional.jl
 index 5a45a1f88..b1a0053a9 100644
 --- a/src/mcmc/gibbs_conditional.jl
@@ -151,8 +246,69 @@ index 5a45a1f88..b1a0053a9 100644
  end
  
  @inline _to_varnamedtuple(dists::NamedTuple) = DynamicPPL.VarNamedTuple(dists)
+diff --git a/src/mcmc/hmc.jl b/src/mcmc/hmc.jl
+index 9928a57a3..e094af3ba 100644
+--- a/src/mcmc/hmc.jl
++++ b/src/mcmc/hmc.jl
+@@ -85,7 +85,26 @@ end
+ 
+ Turing.Inference.init_strategy(::Hamiltonian) = DynamicPPL.InitFromUniform()
+ 
+-# Handle setting `nadapts` and `discard_initial`
++"""
++    sample([rng,] model, sampler::Union{NUTS,HMCDA}, N; kwargs...)
++
++Draw `N` samples from `model` using [`NUTS`](@ref) or [`HMCDA`](@ref).
++For these samplers, `nadapts` controls adaptation rather than `num_warmup`.
++
++# Keyword Arguments
++
++- `nadapts=sampler.n_adapts`: Maximum number of adaptation steps. `-1`, which constructors
++    set when not given `n_adapts`, selects `min(1000, N ÷ 2)`. `0` disables adaptation.
++    `NUTS(0, δ)` and `HMCDA(0, δ, λ)` never adapt, regardless of `nadapts`.
++- `discard_adapt=true`: Whether to discard the first `nadapts` samples.
++- `discard_initial=discard_adapt ? nadapts : 0`: Number of initial samples to discard, drawn
++    in addition to the `N` returned.
++
++When resuming from `initial_state`, these keywords are ignored: adaptation is disabled and
++no samples are discarded.
++
++See [Sampling Options](https://turinglang.org/docs/usage/sampling-options/) for shared keyword arguments.
++"""
+ function AbstractMCMC.sample(
+     rng::AbstractRNG,
+     model::DynamicPPL.Model,
+diff --git a/src/mcmc/mh.jl b/src/mcmc/mh.jl
+index 69142e621..7c4c21a7e 100644
+--- a/src/mcmc/mh.jl
++++ b/src/mcmc/mh.jl
+@@ -8,6 +8,7 @@ Construct a Metropolis-Hastings sampler that draws proposals from the model prio
+ Construct a Metropolis-Hastings sampler that performs random-walk sampling in linked
+ space, with proposals drawn from a multivariate normal distribution with the given
+ covariance matrix. Its dimension must match the complete linked parameter vector.
++The sampled variables must be continuous.
+ """
+ struct MH <: AbstractSampler end
+ 
+@@ -104,7 +105,15 @@ end
+ # RWMH can be delegated to AdvancedMH. The type bound is intentionally lax because we just
+ # let the MvNormal constructor handle it.
+ function MH(cov_matrix::Any)
+-    return externalsampler(AMH.RWMH(MvNormal(cov_matrix)); unconstrained=true)
++    return externalsampler(
++        AMH.RWMH(MvNormal(cov_matrix)); adtype=ADTypes.NoAutoDiff(), unconstrained=true
++    )
++end
++
++function allow_discrete_variables(
++    ::AMH.MetropolisHastings{<:AMH.RandomWalkProposal{<:Any,<:MvNormal}}
++)
++    return false
+ end
+ 
+ ####
 diff --git a/src/mcmc/particle_mcmc.jl b/src/mcmc/particle_mcmc.jl
-index 871e881cd..288671026 100644
+index 871e881cd..d93272dc4 100644
 --- a/src/mcmc/particle_mcmc.jl
 +++ b/src/mcmc/particle_mcmc.jl
 @@ -33,7 +33,7 @@ particle_rng(rng::AbstractRNG) = Random123.Philox2x(UInt64, rand(rng, UInt64))
@@ -186,12 +342,14 @@ index 871e881cd..288671026 100644
      varinfo::DynamicPPL.AbstractVarInfo
      rng::RT
      # `logweight` tracks whatever `DynamicPPL.LogProbType` is, so weights follow suit if it
-@@ -110,10 +108,20 @@ function Particle(
+@@ -110,10 +108,22 @@ function Particle(
      varinfo = particle_varinfo()
      args, kwargs = DynamicPPL.make_evaluate_args_and_kwargs(model, varinfo)
      particle = Particle(varinfo, rng, reference)
 -    particle.task = Libtask.TapedTask(particle, model.f, args...; kwargs...)
-+    particle.task = Libtask.TapedTask(particle, evaluate_particle!, model.f, args...; kwargs...)
++    particle.task = Libtask.TapedTask(
++        particle, evaluate_particle!, model.f, args...; kwargs...
++    )
      return particle
  end
  
@@ -208,7 +366,7 @@ index 871e881cd..288671026 100644
  """
      reseed!(particle, rng)
  
-@@ -185,29 +193,7 @@ function DynamicPPL.tilde_assume!!(
+@@ -185,29 +195,7 @@ function DynamicPPL.tilde_assume!!(
          DynamicPPL.InitFromParams(reference, nothing)
      end
      ctx = DynamicPPL.InitContext(particle.rng, strategy, DynamicPPL.UnlinkAll())
@@ -239,7 +397,7 @@ index 871e881cd..288671026 100644
  end
  
  """
-@@ -248,68 +234,25 @@ function DynamicPPL.accumulate_observe!!(
+@@ -248,68 +236,25 @@ function DynamicPPL.accumulate_observe!!(
      return DynamicPPL.acclogp(acc, Distributions.loglikelihood(dist, left))
  end
  
@@ -321,7 +479,7 @@ index 871e881cd..288671026 100644
  end
  
  # Tell Libtask which calls may contain a `produce`, so it instruments them. The produce itself is in
-@@ -317,7 +260,7 @@ end
+@@ -317,7 +262,7 @@ end
  # approximating is safe (a wrongly-marked call is merely instrumented); missing a real one is not.
  #
  #   observe:      tilde_observe!! -> accumulate_observe!! -> acclogp
@@ -330,7 +488,7 @@ index 871e881cd..288671026 100644
  #                 (the `@addlogprob! (; ...)` NamedTuple form arrives via acclogp!!, and its
  #                 `logprior` field produces in acclogprior!! itself)
  #   Gibbs:        a conditioned variable is an observation, so it hits tilde_observe!!
-@@ -327,7 +270,6 @@ Libtask.@might_produce(DynamicPPL.acclogp)
+@@ -327,7 +272,6 @@ Libtask.@might_produce(DynamicPPL.acclogp)
  Libtask.@might_produce(DynamicPPL.tilde_assume!!)
  Libtask.@might_produce(DynamicPPL.accloglikelihood!!)
  Libtask.@might_produce(DynamicPPL.acclogprior!!)
@@ -338,7 +496,7 @@ index 871e881cd..288671026 100644
  Libtask.@might_produce(DynamicPPL.map_accumulator!!)
  Libtask.@might_produce(DynamicPPL.acclogp!!)
  # Every model / submodel evaluator takes a `DynamicPPL.Model`, so this covers them all.
-@@ -342,9 +284,7 @@ function trajectory_varinfo()
+@@ -342,9 +286,7 @@ function trajectory_varinfo()
      return DynamicPPL.setacc!!(DynamicPPL.VarInfo(), DynamicPPL.RawValueAccumulator(true))
  end
  
@@ -349,6 +507,59 @@ index 871e881cd..288671026 100644
  function particle_varinfo()
      return DynamicPPL.setacc!!(trajectory_varinfo(), ProduceLogLikelihoodAccumulator())
  end
+diff --git a/src/optimisation/Optimisation.jl b/src/optimisation/Optimisation.jl
+index 42d96f371..d22ef85fd 100644
+--- a/src/optimisation/Optimisation.jl
++++ b/src/optimisation/Optimisation.jl
+@@ -76,10 +76,8 @@ struct ModeResult{
+     "Dictionary of parameter values. These values are always provided in unlinked space,
+     even if the optimisation was run in linked space."
+     params::P
+-    "The final log likelihood or log joint, depending on whether `MAP` or `MLE` was run.
+-    Note that this is the actual log probability of the parameters, i.e., not negated;
+-    we do need a negated log probability to run the optimisation itself (since it is a
+-    maximisation), but this is handled in a way that is entirely transparent to the user."
++    "The log likelihood for `MLE` or the log joint for `MAP`, evaluated at the fitted
++    parameters."
+     lp::LP
+     "Whether the optimisation was done in a transformed space."
+     linked::Bool
+diff --git a/src/optimisation/stats.jl b/src/optimisation/stats.jl
+index 2fcc213b6..e59d6c906 100644
+--- a/src/optimisation/stats.jl
++++ b/src/optimisation/stats.jl
+@@ -179,4 +179,7 @@ StatsBase.coef(m::ModeResult) = last(vector_names_and_params(m))
+ StatsBase.coefnames(m::ModeResult) = first(vector_names_and_params(m))
+ StatsBase.params(m::ModeResult) = StatsBase.coefnames(m)
+ StatsBase.vcov(m::ModeResult) = inv(StatsBase.informationmatrix(m))
+-StatsBase.loglikelihood(m::ModeResult) = m.lp
++StatsBase.loglikelihood(m::ModeResult{MLE}) = m.lp
++function StatsBase.loglikelihood(m::ModeResult)
++    return DynamicPPL.loglikelihood(m.ldf.model, m.params)
++end
+diff --git a/test/Project.toml b/test/Project.toml
+index 92b49ae04..46fd25434 100644
+--- a/test/Project.toml
++++ b/test/Project.toml
+@@ -23,6 +23,7 @@ LogDensityProblemsAD = "996a588d-648d-4e1f-a8f0-a84b347e47b1"
+ Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
+ MCMCChains = "c7f686f2-ff18-58e9-bc7b-31028e88f75d"
+ Mooncake = "da2b9cff-9c12-43a0-ae48-6db2b0edb7d6"
++Optimisers = "3bd65402-5787-11e9-1adc-39752487f4e2"
+ Optimization = "7f7a1694-90dd-40f0-9382-eb1efda571ba"
+ OptimizationBBO = "3e6eede4-6085-4f62-9a71-46d9bc1eb92b"
+ OptimizationNLopt = "4e6fcdb7-1186-4e1f-a706-475e75c168bb"
+@@ -64,6 +65,10 @@ LogDensityProblems = "2"
+ LogDensityProblemsAD = "1.4"
+ MCMCChains = "7"
+ Mooncake = "0.4.182, 0.5"
++# Indirect test dependency, listed only for this cap: FluxML/Optimisers.jl#262
++# (0.4.13) breaks ReverseDiff through `destructure`'s `Restructure` for any
++# array of two or more dimensions, as in full-rank VI. Drop once fixed upstream.
++Optimisers = "< 0.4.13"
+ Optimization = "3, 4, 5"
+ OptimizationBBO = "0.1, 0.2, 0.3, 0.4"
+ OptimizationNLopt = "0.1, 0.2, 0.3"
 diff --git a/test/ad.jl b/test/ad.jl
 index 5e1cfcd29..9a6a67db4 100644
 --- a/test/ad.jl
@@ -386,11 +597,63 @@ index 5e1cfcd29..9a6a67db4 100644
  """
  All the ADTypes on which we want to run the tests.
  """
+diff --git a/test/mcmc/external_sampler.jl b/test/mcmc/external_sampler.jl
+index b9cf71b0a..41e6b8c38 100644
+--- a/test/mcmc/external_sampler.jl
++++ b/test/mcmc/external_sampler.jl
+@@ -2,6 +2,7 @@ module ExternalSamplerTests
+ 
+ using ..Models: gdemo_default
+ using ..SamplerTestUtils: test_sampler_analytical
++using ADTypes: ADTypes
+ using AbstractMCMC: AbstractMCMC
+ using AdvancedMH: AdvancedMH
+ using Distributions: sample
+@@ -327,6 +328,21 @@ end
+     end
+ 
+     @testset "AdvancedMH.jl" begin
++        @testset "sampling without AD" begin
++            only_float64(x::Float64) = x
++            @model function nondifferentiable()
++                x ~ Normal()
++                return 1.0 ~ Normal(only_float64(x), 1)
++            end
++            sampler = AdvancedMH.RWMH(MvNormal([0.1;;]))
++            @test sample(
++                nondifferentiable(),
++                externalsampler(sampler; adtype=ADTypes.NoAutoDiff(), unconstrained=false),
++                10;
++                progress=false,
++            ) isa VNChain
++        end
++
+         @testset "RWMH" begin
+             @testset "$(model.f)" for model in DynamicPPL.TestUtils.DEMO_MODELS
+                 # Need some functionality to initialize the sampler.
 diff --git a/test/mcmc/gibbs.jl b/test/mcmc/gibbs.jl
-index cdc140662..f71cbbaf2 100644
+index cdc140662..46a1a219f 100644
 --- a/test/mcmc/gibbs.jl
 +++ b/test/mcmc/gibbs.jl
-@@ -236,87 +236,22 @@ end
+@@ -214,6 +214,17 @@ end
+     end
+ end
+ 
++@testset "components respect discrete-variable support" begin
++    @model function mixed_target()
++        z ~ Bernoulli(0.5)
++        return x ~ Normal(z, 1)
++    end
++    sampler = Gibbs(@varname(z) => MH([0.1;;]), @varname(x) => MH())
++    @test_throws "cannot sample discrete variable z" sample(
++        Xoshiro(3), mixed_target(), sampler, 10; progress=false
++    )
++end
++
+ @testset "a component that keeps no linked layout needs no link" begin
+     # `MH` rebuilds from the conditioned values each step, so `Gibbs` compares its block at the
+     # values' own shape and never derives a linking transform for it. The distribution has to
+@@ -236,87 +247,22 @@ end
      ) isa Any
  end
  
@@ -486,7 +749,7 @@ index cdc140662..f71cbbaf2 100644
  end
  
  @testset "Missing Gibbs samplers throw error" begin
-@@ -375,10 +310,7 @@ end
+@@ -375,10 +321,7 @@ end
          args...;
          kwargs...,
      )
@@ -528,6 +791,36 @@ index 04715507e..f6b175221 100644
          sample(Xoshiro(1), model, spl, 3; check_model=false, progress=false)
          @test DynamicPPL.getvalue(seen[], @varname(x[1])) == 1.5
          @test DynamicPPL.hasvalue(seen[], @varname(x[2]))
+diff --git a/test/mcmc/mh.jl b/test/mcmc/mh.jl
+index f20b4696e..705820c72 100644
+--- a/test/mcmc/mh.jl
++++ b/test/mcmc/mh.jl
+@@ -28,6 +28,25 @@ using ..NumericalTests: check_MoGtest_default, check_gdemo
+     end
+ 
+     @testset "basic accuracy tests" begin
++        @testset "random walk rejects discrete variables" begin
++            @model function discrete_target()
++                z ~ Bernoulli(0.2)
++                return 1.0 ~ Normal(z, 0.5)
++            end
++            @test_throws "has one or more issues that may cause inference to fail" sample(
++                StableRNG(3), discrete_target(), MH([0.1;;]), 10; progress=false
++            )
++        end
++
++        @testset "random walk does not require gradients" begin
++            only_float64(x::Float64) = x
++            @model function nondifferentiable()
++                x ~ Normal()
++                return 1.0 ~ Normal(only_float64(x), 1)
++            end
++            @test sample(nondifferentiable(), MH([0.1;;]), 10; progress=false) isa VNChain
++        end
++
+         @testset "linking and Jacobian" begin
+             # This model has no likelihood, it's mainly here to test that linking and
+             # Jacobians work fine.
 diff --git a/test/mcmc/particle_mcmc.jl b/test/mcmc/particle_mcmc.jl
 index 7eea89e1b..ee6720f29 100644
 --- a/test/mcmc/particle_mcmc.jl
@@ -616,3 +909,17 @@ index 7eea89e1b..ee6720f29 100644
      end
  
      @testset "both fields of a named addlogprob are weighted" begin
+diff --git a/test/optimisation/Optimisation.jl b/test/optimisation/Optimisation.jl
+index e76fa4a97..bc82c8786 100644
+--- a/test/optimisation/Optimisation.jl
++++ b/test/optimisation/Optimisation.jl
+@@ -495,6 +495,9 @@ end
+             check_success(m4)
+             check_success(m5)
+             check_success(m6)
++            @test isapprox(
++                loglikelihood(m2), loglikelihood(GDEMO_DEFAULT, true_value), atol=0.01
++            )
+ 
+             @test !hasstats(m2) || m2.optim_result.stats.iterations <= 1
+             if hasstats(m6) && hasstats(m5)

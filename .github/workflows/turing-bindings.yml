@@ -32,6 +32,7 @@ jobs:
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '1'
+      JULIA_PKG_PRECOMPILE_AUTO: '0'
       OPENBLAS_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v7
@@ -79,6 +80,9 @@ jobs:
       - name: Apply the Turing migration
         shell: bash
         run: git -C target apply "$PWD/fixtures/turing-bindings/turing.patch"
+      - name: Update the Turing path entry
+        shell: bash
+        run: julia --startup-file=no --project=test-env -e 'using Pkg; Pkg.develop(PackageSpec(;path=abspath("target")); preserve=Pkg.PRESERVE_ALL); Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' | tee merged-setup.log
       - name: Run test shard
         if: matrix.shard != 'Regressions'
         shell: bash

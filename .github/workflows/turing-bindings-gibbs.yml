@@ -1,4 +1,4 @@
-name: Diagnose Gibbs particle weights
+name: Check particle weights on Julia 1.10
 
 on:
   push:
@@ -9,22 +9,13 @@ permissions:
 
 jobs:
   test:
-    name: Gibbs / ${{ matrix.case }}
+    name: Particles on Julia 1.10.8
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - case: pass-model-function
-            dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
-          - case: dynamic-model-call
-            dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
-          - case: trace-invokes
-            dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
     env:
       JULIA_NUM_THREADS: '2'
       JULIA_NUM_PRECOMPILE_TASKS: '1'
+      JULIA_PKG_PRECOMPILE_AUTO: '0'
       OPENBLAS_NUM_THREADS: '1'
     steps:
       - uses: actions/checkout@v7
@@ -39,7 +30,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: TuringLang/DynamicPPL.jl
-          ref: ${{ matrix.dynamicppl }}
+          ref: e924cf288a1482fd994477ed1ea2cded8c129ae0
           path: dynamicppl
           persist-credentials: false
       - uses: actions/checkout@v7
@@ -56,31 +47,26 @@ jobs:
           persist-credentials: false
       - uses: julia-actions/setup-julia@v3
         with:
-          version: '1.13.4'
+          version: '1.10.8'
       - uses: julia-actions/cache@v3
-      - name: Prepare pinned dependencies
+      - name: Resolve dependencies for Julia 1.10
         shell: bash
         run: |
           git -C flexichains apply "$PWD/fixtures/turing-bindings/flexi.patch"
           mkdir test-env
-          cp fixtures/turing-bindings/{Project,Manifest}.toml test-env/
-          julia --startup-file=no --project=test-env -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false); Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' | tee setup.log
+          cp fixtures/turing-bindings/Project.toml test-env/
+          julia --startup-file=no --project=test-env -e 'using Pkg; Pkg.develop([PackageSpec(; path=pwd() * "/" * p) for p in ("dynamicppl", "advancedvi", "flexichains", "target")]); Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' | tee setup.log
       - name: Apply the Turing migration
-        if: matrix.case != 'base-head'
         shell: bash
         run: git -C target apply "$PWD/fixtures/turing-bindings/turing.patch"
-      - name: Capture weights and seeded draws
+      - name: Check local models and keyword arguments
         shell: bash
-        env:
-          CASE: ${{ matrix.case }}
-        run: |
-          particle=target/src/mcmc/particle_mcmc.jl
-          case "$CASE" in
-            pass-model-function)
-              sed -i 's/TapedTask(particle, evaluate_particle!, args/TapedTask(particle, evaluate_particle!, model.f, args/; s/function evaluate_particle!(model::DynamicPPL.Model, args...; kwargs...)/function evaluate_particle!(evaluator::F, model::DynamicPPL.Model, args::Vararg{Any,N}; kwargs...) where {F,N}/; s/_, vi = model.f(model/_, vi = evaluator(model/' "$particle"
-              ;;
-            dynamic-model-call)
-              sed -i 's/_, vi = model.f(model/_, vi = Base.inferencebarrier(model.f)(model/' "$particle"
-              ;;
-          esac
-          julia --startup-file=no --depwarn=yes --project=test-env fixtures/turing-bindings/gibbs-probe.jl "$CASE"
+        run: julia --startup-file=no --depwarn=yes --project=test-env fixtures/turing-bindings/particle-weights.jl
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: julia-1.10-environment
+          path: |
+            setup.log
+            test-env/Project.toml
+            test-env/Manifest.toml

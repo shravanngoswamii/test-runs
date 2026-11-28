@@ -16,11 +16,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - case: base-head
+          - case: keep-model-call
             dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
           - case: mark-tuple-map
-            dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
-          - case: keep-evaluator-call
             dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
     env:
       JULIA_NUM_THREADS: '2'

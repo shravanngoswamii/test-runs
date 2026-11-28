@@ -1,0 +1,48 @@
+diff --git a/Project.toml b/Project.toml
+index fa95df5..74eb584 100644
+--- a/Project.toml
++++ b/Project.toml
+@@ -65,7 +65,7 @@ DelimitedFiles = "1"
+ DimensionalData = "0.29.24, 0.30"
+ Distributions = "0.25"
+ DocStringExtensions = "0.9"
+-DynamicPPL = "0.41.6, 0.42"
++DynamicPPL = "0.41.6, 0.42, 0.43"
+ InferenceObjects = "0.4"
+ IntervalSets = "0.5 - 0.7"
+ KernelDensity = "0.6"
+diff --git a/ext/FlexiChainsDynamicPPLExt.jl b/ext/FlexiChainsDynamicPPLExt.jl
+index 1acc345..ad6c385 100644
+--- a/ext/FlexiChainsDynamicPPLExt.jl
++++ b/ext/FlexiChainsDynamicPPLExt.jl
+@@ -10,6 +10,12 @@ using DynamicPPL: DynamicPPL, UnlinkAll, TransformedValue, NoTransform, VarNamed
+ using OrderedCollections: OrderedDict
+ using Random: Random
+ 
++const AccumulatorVarInfo = if isdefined(DynamicPPL, :OnlyAccsVarInfo)
++    DynamicPPL.OnlyAccsVarInfo
++else
++    DynamicPPL.VarInfo
++end
++
+ ##################
+ # bundle_samples #
+ ##################
+@@ -414,7 +420,7 @@ function reevaluate(
+ )::DD.DimMatrix{<:Tuple{<:Any,<:DynamicPPL.AbstractVarInfo}} where {N}
+     niters, nchains = size(chain)
+     tuples = Iterators.product(1:niters, 1:nchains)
+-    vi = DynamicPPL.OnlyAccsVarInfo(DynamicPPL.AccumulatorTuple(accs))
++    vi = AccumulatorVarInfo(DynamicPPL.AccumulatorTuple(accs))
+     retvals_and_varinfos = map(tuples) do (i, j)
+         DynamicPPL.init!!(
+             rng,
+@@ -692,7 +698,7 @@ function FlexiChains._make_prior_chain(
+     n_chains::Int;
+     make_chain=true,
+ )
+-    vi = DynamicPPL.OnlyAccsVarInfo((
++    vi = AccumulatorVarInfo((
+         DynamicPPL.default_accumulators()...,
+         DynamicPPL.RawValueAccumulator(true),
+     ))

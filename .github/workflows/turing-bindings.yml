@@ -1,0 +1,101 @@
+name: Turing binding migration
+
+on:
+  push:
+    branches: [sg/turing-bindings-suite]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Turing / ${{ matrix.shard }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: Gibbs
+            args: mcmc/gibbs.jl mcmc/gibbs_conditional.jl
+          - shard: Particles
+            args: mcmc/particle_mcmc.jl
+          - shard: AD
+            args: ad.jl
+          - shard: Inference
+            args: mcmc/Inference.jl
+          - shard: Remaining
+            args: --skip mcmc/gibbs.jl mcmc/gibbs_conditional.jl mcmc/particle_mcmc.jl ad.jl mcmc/Inference.jl
+          - shard: Regressions
+            args: ''
+    env:
+      JULIA_NUM_THREADS: '2'
+      JULIA_NUM_PRECOMPILE_TASKS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: shravanngoswamii/Turing.jl
+          ref: 67a9f804e376a1fc18ed8362532458063f443864
+          path: target
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/DynamicPPL.jl
+          ref: e924cf288a1482fd994477ed1ea2cded8c129ae0
+          path: dynamicppl
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: shravanngoswamii/AdvancedVI.jl
+          ref: 8f7d5c0763afe805b7105d61e98f9e47942a02b7
+          path: advancedvi
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: JuliaBayes/FlexiChains.jl
+          ref: e23d67855766df5cf20212d3ab3abac15fb1768b
+          path: flexichains
+          persist-credentials: false
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13.4'
+      - uses: julia-actions/cache@v3
+      - name: Prepare pinned dependencies
+        shell: bash
+        run: |
+          git -C flexichains apply "$PWD/fixtures/turing-bindings/flexi.patch"
+          mkdir test-env
+          cp fixtures/turing-bindings/{Project,Manifest}.toml test-env/
+          julia --startup-file=no --project=test-env -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false); Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' | tee setup.log
+      - name: Reproduce on the unchanged Turing branch
+        if: matrix.shard == 'Regressions'
+        shell: bash
+        run: julia --startup-file=no --depwarn=yes --project=test-env fixtures/turing-bindings/regressions.jl before 2>&1 | tee before.log
+      - name: Apply the Turing migration
+        shell: bash
+        run: git -C target apply "$PWD/fixtures/turing-bindings/turing.patch"
+      - name: Run test shard
+        if: matrix.shard != 'Regressions'
+        shell: bash
+        env:
+          TEST_ARGS: ${{ matrix.args }}
+        run: |
+          read -r -a args <<< "$TEST_ARGS"
+          julia --startup-file=no --depwarn=yes --project=test-env target/test/runtests.jl "${args[@]}" 2>&1 | tee suite.log
+      - name: Verify fixed workflows
+        if: matrix.shard == 'Regressions'
+        shell: bash
+        run: julia --startup-file=no --depwarn=yes --project=test-env fixtures/turing-bindings/regressions.jl after 2>&1 | tee after.log
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: turing-${{ matrix.shard }}
+          path: |
+            *.log
+            test-env/Project.toml
+            test-env/Manifest.toml

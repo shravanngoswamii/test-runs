@@ -1,0 +1,604 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 682af00d1..f56fa016a 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -144,17 +144,12 @@ executes at all.
+ block's linked dimension while its values keep their shape; a component that cannot rebuild is
+ refused with a `ReshapedBlock`. Layout, not chain correctness.
+ 
+-### Gibbs refuses a `missing` model argument
+-
+-Conditioning cannot reach a variable that is a model argument: the compiler reads the argument
+-directly for such a tilde, so the `missing` arrives at the likelihood and throws. This is a
+-capability `GibbsContext` had and conditioning does not, so Gibbs refuses instead —
+-`check_no_missing_arguments`, over `model.args` AND `model.defaults`, whole arguments and array
+-elements alike. Do not narrow it on the strength of a `GibbsConditional` test: that sampler
+-evaluates without a log-likelihood accumulator and masks the failure. Restoring the capability
+-needs DynamicPPL.jl#1462 (unmerged), and `missing` as a latent marker is due for deprecation
+-anyway (DynamicPPL.jl#1464). Keep the check in Gibbs and out of `_check_model`: other samplers
+-take these models.
++### Gibbs uses model bindings for argument observations
++
++DynamicPPL 0.43 lets Gibbs condition an argument on another component's draw. Keep the storage
++when subsetting the values used to condition a component, since partially bound arrays need it.
++`GibbsConditional` reads argument observations from the model's bindings and covariates from
++its arguments.
+ 
+ ### Conditioned variables are observations
+ 
+diff --git a/HISTORY.md b/HISTORY.md
+index fd8e6401b..b3e5d3fa1 100644
+--- a/HISTORY.md
++++ b/HISTORY.md
+@@ -1,6 +1,8 @@
+ # Unreleased
+ 
+-  - DynamicPPL 0.43 is now the minimum. ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915))
++DynamicPPL 0.43 is now the minimum ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915)).
++
++Gibbs again supports latent variables passed as `missing` in model arguments ([#2915](https://github.com/TuringLang/Turing.jl/pull/2915)).
+ 
+ # 0.49.0
+ 
+diff --git a/src/mcmc/gibbs.jl b/src/mcmc/gibbs.jl
+index f95a34a65..8ea989cfc 100644
+--- a/src/mcmc/gibbs.jl
++++ b/src/mcmc/gibbs.jl
+@@ -1166,59 +1166,12 @@ invisible to two separate callers, so both ask here.
+ """
+ model_argument_values(model::DynamicPPL.Model) = merge(model.args, model.defaults)
+ 
+-"""
+-    check_no_missing_arguments(model)
+-
+-Refuse a model with an argument bound to `missing`, or holding one.
+-
+-Gibbs conditions every component on the variables it does not sample, and conditioning cannot
+-reach a variable that is a model argument: the compiler reads the argument directly for such a
+-tilde and never consults the condition context, so the `missing` arrives at the likelihood and
+-throws `MethodError: no method matching loglikelihood(::Normal{Float64}, ::Missing)`. An element
+-of an array argument goes the same way as a whole one.
+-
+-This is a capability `GibbsContext` had and conditioning does not: it made the variable an
+-assumption and supplied the value itself. Restoring it needs `condition` to take precedence over
+-a model argument (DynamicPPL.jl#1462, unmerged), and `missing` as a latent marker is due for
+-deprecation anyway (DynamicPPL.jl#1464), so Gibbs refuses instead of failing inside the
+-likelihood. Other samplers are unaffected.
+-
+-Deliberately coarse: an argument that is `missing` but never the left-hand side of a tilde is
+-refused too, though it would sample. Telling the two apart needs an evaluation, and a false
+-refusal that names the argument is easier to act on than a `MethodError` from inside DynamicPPL.
+-"""
+-function check_no_missing_arguments(model::DynamicPPL.Model)
+-    for (name, arg) in pairs(model_argument_values(model))
+-        _holds_missing(arg) || continue
+-        throw(
+-            ArgumentError(
+-                "`Gibbs` cannot sample this model: its argument `$(name)` is or holds " *
+-                "`missing`. Gibbs conditions each component on the variables it does not " *
+-                "sample, and conditioning cannot reach a variable that is a model argument, " *
+-                "so the `missing` reaches the likelihood. Declare `$(name)` inside the model " *
+-                "instead of taking it as an argument, and condition on your observations.",
+-            ),
+-        )
+-    end
+-end
+-
+-_holds_missing(x) = ismissing(x)
+-# Both halves of the gate are load-bearing. An array of bits types can hold no `missing` and
+-# nest none either, which keeps this O(1) for ordinary data; but `Missing` is itself a bits
+-# type, so a `Vector{Missing}` needs the first half, and a nested container's `eltype` is never
+-# `>: Missing`, so it needs the second. Anything past the gate has its elements asked.
+-function _holds_missing(x::AbstractArray)
+-    (eltype(x) >: Missing || !isbitstype(eltype(x))) || return false
+-    return any(_holds_missing, x)
+-end
+-
+ """
+     gibbs_initial_values(rng, model, spl, initial_params)
+ 
+ Return the values the sweep starts from, and check that every one of them has a component.
+ """
+ function gibbs_initial_values(rng, model, spl::Gibbs, initial_params)
+-    check_no_missing_arguments(model)
+     _, accs = DynamicPPL.init!!(
+         rng, model, _snapshot_accs(), initial_params, DynamicPPL.UnlinkAll()
+     )
+diff --git a/src/mcmc/gibbs_conditional.jl b/src/mcmc/gibbs_conditional.jl
+index 5a45a1f88..b1a0053a9 100644
+--- a/src/mcmc/gibbs_conditional.jl
++++ b/src/mcmc/gibbs_conditional.jl
+@@ -102,36 +102,14 @@ keeps_linked_layout(::GibbsConditional) = false
+ """
+     build_values_vnt(model::DynamicPPL.Model)
+ 
+-Build a `VarNamedTuple` of the values of every variable this component conditions on: those
+-supplied as model arguments, and those Gibbs, the user, or `fix` conditioned.
+-
+-`merge` is right-biased and replaces a whole key, so an array argument with a `missing`
+-element -- whose other elements are observations and whose `missing` one Gibbs conditions on
+-the current draw -- loses its observations to the partially-set conditioned value. Those
+-elements are put back afterwards, rather than merging leaf by leaf throughout, so that a value
+-stored under one key stays under one key: `get_cond_dists` sees these keys.
+-
+-A `missing` in the context is put back the same way. `condition(model; y=missing)` leaves `y`
+-absent as far as model execution is concerned, so the model uses the argument it was given, and
+-`get_cond_dists` must see that argument rather than the `missing` the merge would otherwise
+-leave in its place.
++Build the values visible to the conditional, including covariates, observations and fixed values.
+ """
+ function build_values_vnt(model::DynamicPPL.Model)
+-    context = model.context
+-    # Keyword arguments too: `model.args` alone left `f(; y = 2.0)` invisible here.
+-    args = DynamicPPL.VarNamedTuple(model_argument_values(model))
+-    vals = merge(args, DynamicPPL.conditioned(context), DynamicPPL.fixed(context))
+-    for vn in keys(args), leaf in AbstractPPL.varname_leaves(vn, args[vn])
+-        arg_value = DynamicPPL.getvalue(args, leaf)
+-        arg_value === missing && continue
+-        # Restore the argument both when the merge dropped the leaf and when it replaced it
+-        # with a `missing`, which model execution would have ignored.
+-        if DynamicPPL.hasvalue(vals, leaf)
+-            DynamicPPL.getvalue(vals, leaf) === missing || continue
+-        end
+-        vals = DynamicPPL.setindex!!(vals, arg_value, leaf)
+-    end
+-    return vals
++    arguments = model_argument_values(model)
++    lhs = DynamicPPL._lhs_arguments(model)
++    names = Tuple(name for name in keys(arguments) if DynamicPPL.unsplat_symbol(name) ∉ lhs)
++    covariates = DynamicPPL.VarNamedTuple(NamedTuple{names}(arguments))
++    return merge(covariates, DynamicPPL.conditioned(model), DynamicPPL.fixed(model))
+ end
+ 
+ @inline _to_varnamedtuple(dists::NamedTuple) = DynamicPPL.VarNamedTuple(dists)
+diff --git a/src/mcmc/particle_mcmc.jl b/src/mcmc/particle_mcmc.jl
+index 871e881cd..5ca324072 100644
+--- a/src/mcmc/particle_mcmc.jl
++++ b/src/mcmc/particle_mcmc.jl
+@@ -33,7 +33,7 @@ particle_rng(rng::AbstractRNG) = Random123.Philox2x(UInt64, rand(rng, UInt64))
+ #
+ 
+ # A `Particle` is the only mutable state. It is stored as its `TapedTask`'s "taped globals",
+-# so the tilde overloads reach it from *inside* a running model via `get_taped_globals`.
++# so the evaluator reaches it from inside a running model via `get_taped_globals`.
+ # This keeps all state explicit on the particle -- no `task_local_storage`.
+ 
+ # Particle samplers replay executions in a fixed order, so they cannot run models whose
+@@ -54,8 +54,8 @@ end
+ 
+ Leaf context marking a model evaluation as a particle-filter step: `tilde_assume!!` draws from
+ the prior using the particle's own generator -- or, for a conditional-SMC reference, reuses the
+-retained trajectory's value at that address -- and `tilde_observe!!` scores the observation and
+-`Libtask.produce`s the increment as the particle's weight.
++retained trajectory's value at that address. The likelihood accumulator produces each
++observation's log-likelihood as an incremental weight.
+ """
+ struct SMCContext <: DynamicPPL.AbstractContext end
+ 
+@@ -75,9 +75,7 @@ becomes a conditional-SMC reference pinned to that trajectory, erroring if its e
+ address that trajectory lacks or finishes without reaching one it has.
+ """
+ mutable struct Particle{RT<:AbstractRNG,WT<:Real}
+-    # Abstract on purpose: the varinfo type changes as the execution proceeds, since each new
+-    # address widens the raw-value accumulator's `VarNamedTuple`. Accesses go through Libtask's
+-    # (already type-unstable) taped globals, so this costs nothing extra.
++    # The evaluator can return a different VarInfo type as it records new addresses.
+     varinfo::DynamicPPL.AbstractVarInfo
+     rng::RT
+     # `logweight` tracks whatever `DynamicPPL.LogProbType` is, so weights follow suit if it
+@@ -110,10 +108,17 @@ function Particle(
+     varinfo = particle_varinfo()
+     args, kwargs = DynamicPPL.make_evaluate_args_and_kwargs(model, varinfo)
+     particle = Particle(varinfo, rng, reference)
+-    particle.task = Libtask.TapedTask(particle, model.f, args...; kwargs...)
++    particle.task = Libtask.TapedTask(particle, evaluate_particle!, args...; kwargs...)
+     return particle
+ end
+ 
++function evaluate_particle!(model::DynamicPPL.Model, args...; kwargs...)
++    _, vi = model.f(model, args...; kwargs...)
++    # consume reports produced weights and discards the evaluator's return value.
++    Libtask.get_taped_globals(Particle).varinfo = vi
++    return nothing
++end
++
+ """
+     reseed!(particle, rng)
+ 
+@@ -185,29 +190,7 @@ function DynamicPPL.tilde_assume!!(
+         DynamicPPL.InitFromParams(reference, nothing)
+     end
+     ctx = DynamicPPL.InitContext(particle.rng, strategy, DynamicPPL.UnlinkAll())
+-    x, vi = DynamicPPL.tilde_assume!!(ctx, dist, vn, template, vi)
+-    particle.varinfo = vi
+-    return x, vi
+-end
+-
+-# Both tilde handlers thread the varinfo the model passed in, and mirror the result onto the
+-# particle for the sweep to read between produces. Reading `particle.varinfo` instead would discard
+-# whatever the model body accumulated since the previous tilde: `@addlogprob!` reaches the varinfo
+-# directly rather than through a handler, so its term would never reach a chain's `loglikelihood`.
+-function DynamicPPL.tilde_observe!!(
+-    ::SMCContext,
+-    dist::Distribution,
+-    left,
+-    vn::Union{VarName,Nothing},
+-    template,
+-    vi::DynamicPPL.AbstractVarInfo,
+-)
+-    particle = Libtask.get_taped_globals(Particle)
+-    left, vi = DynamicPPL.tilde_observe!!(
+-        DynamicPPL.DefaultContext(), dist, left, vn, template, vi
+-    )
+-    particle.varinfo = vi
+-    return left, vi
++    return DynamicPPL.tilde_assume!!(ctx, dist, vn, template, vi)
+ end
+ 
+ """
+@@ -248,68 +231,25 @@ function DynamicPPL.accumulate_observe!!(
+     return DynamicPPL.acclogp(acc, Distributions.loglikelihood(dist, left))
+ end
+ 
+-# `@addlogprob!` and `:=` update the varinfo without passing through a tilde handler, so a trailing
+-# one has nothing after it to mirror the result onto the particle, and the final varinfo is
+-# unreachable: `Libtask.consume` discards the evaluator's return value once the model is done. The
+-# methods below therefore mirror as the update happens, keyed on the produce-aware accumulator,
+-# which only a particle carries (`trajectory_varinfo` is the set without it) and so identifies a
+-# particle varinfo.
+-#
+-# `:=` is dispatched on the context, so its method below takes `SMCContext`. `@addlogprob!` has no
+-# such hook, so the accumulator methods extend DynamicPPL's own. They dispatch on
+-# `VarInfo`, which every sampler uses, so their non-particle behaviour must stay identical
+-# to DynamicPPL's; they belong there once it offers a context-dispatched entry point.
+-function is_particle_varinfo(vi::DynamicPPL.VarInfo)
+-    acc_name = Val(:LogLikelihood)
+-    return DynamicPPL.hasacc(vi, acc_name) &&
+-           DynamicPPL.getacc(vi, acc_name) isa ProduceLogLikelihoodAccumulator
+-end
+-
+-function acclogp_and_mirror!!(vi, acc_name, logp, ignore_missing_accumulator)
+-    if ignore_missing_accumulator && !DynamicPPL.hasacc(vi, acc_name)
+-        return vi
+-    end
+-    vi = DynamicPPL.map_accumulator!!(acc -> DynamicPPL.acclogp(acc, logp), vi, acc_name)
+-    is_particle_varinfo(vi) && (Libtask.get_taped_globals(Particle).varinfo = vi)
+-    return vi
+-end
+-
+-function DynamicPPL.accloglikelihood!!(
+-    vi::DynamicPPL.VarInfo, logp; ignore_missing_accumulator=false
+-)
+-    return acclogp_and_mirror!!(vi, Val(:LogLikelihood), logp, ignore_missing_accumulator)
+-end
+-
+-# Particles are drawn from the prior, so an ordinary `x ~ Dist` term needs no weight of its own --
+-# the draw already accounts for it. A `logprior` term added by hand never influenced a draw, so it
+-# has to enter the importance weight explicitly. The produce is spelled out here only because
+-# `LogPrior` is DynamicPPL's ordinary accumulator; a `loglikelihood` field needs none, since
+-# `ProduceLogLikelihoodAccumulator` produces as it accumulates. A two-field `@addlogprob!` therefore
+-# produces twice: the same weight, and one more point at which the sweep may resample.
+-#
+-# The `hasacc` guard is repeated rather than delegated so that a produced weight cannot outlive the
+-# increment it stands for. Keeping the produce in this method also keeps it in a function Libtask
+-# instruments: a keyword argument on `acclogp_and_mirror!!` would route the call through
+-# `Core.kwcall`, which `@might_produce` does not name.
++# Manual prior terms did not influence a draw, so they contribute an importance weight.
+ function DynamicPPL.acclogprior!!(
+     vi::DynamicPPL.VarInfo, logp; ignore_missing_accumulator=false
+ )
+-    acc_name = Val(:LogPrior)
+-    if ignore_missing_accumulator && !DynamicPPL.hasacc(vi, acc_name)
++    if ignore_missing_accumulator && !DynamicPPL.hasacc(vi, Val(:LogPrior))
+         return vi
+     end
+-    is_particle_varinfo(vi) && Libtask.produce(logp)
+-    return acclogp_and_mirror!!(vi, acc_name, logp, false)
+-end
+-
+-function DynamicPPL.store_coloneq_value!!(
+-    ::SMCContext, vn::VarName, right, template, vi::DynamicPPL.AbstractVarInfo
+-)
+-    vi = DynamicPPL.store_coloneq_value!!(
+-        DynamicPPL.DefaultContext(), vn, right, template, vi
++    acc_name = Val(:LogLikelihood)
++    if DynamicPPL.hasacc(vi, acc_name) &&
++        DynamicPPL.getacc(vi, acc_name) isa ProduceLogLikelihoodAccumulator
++        Libtask.produce(logp)
++    end
++    return invoke(
++        DynamicPPL.acclogprior!!,
++        Tuple{DynamicPPL.AbstractVarInfo,Any},
++        vi,
++        logp;
++        ignore_missing_accumulator,
+     )
+-    Libtask.get_taped_globals(Particle).varinfo = vi
+-    return vi
+ end
+ 
+ # Tell Libtask which calls may contain a `produce`, so it instruments them. The produce itself is in
+@@ -317,7 +257,7 @@ end
+ # approximating is safe (a wrongly-marked call is merely instrumented); missing a real one is not.
+ #
+ #   observe:      tilde_observe!! -> accumulate_observe!! -> acclogp
+-#   @addlogprob!: accloglikelihood!! -> acclogp_and_mirror!! -> map_accumulator!! -> acclogp
++#   @addlogprob!: accloglikelihood!! -> map_accumulator!! -> acclogp
+ #                 (the `@addlogprob! (; ...)` NamedTuple form arrives via acclogp!!, and its
+ #                 `logprior` field produces in acclogprior!! itself)
+ #   Gibbs:        a conditioned variable is an observation, so it hits tilde_observe!!
+@@ -327,7 +267,6 @@ Libtask.@might_produce(DynamicPPL.acclogp)
+ Libtask.@might_produce(DynamicPPL.tilde_assume!!)
+ Libtask.@might_produce(DynamicPPL.accloglikelihood!!)
+ Libtask.@might_produce(DynamicPPL.acclogprior!!)
+-Libtask.@might_produce(acclogp_and_mirror!!)
+ Libtask.@might_produce(DynamicPPL.map_accumulator!!)
+ Libtask.@might_produce(DynamicPPL.acclogp!!)
+ # Every model / submodel evaluator takes a `DynamicPPL.Model`, so this covers them all.
+diff --git a/test/ad.jl b/test/ad.jl
+index 5e1cfcd29..9a6a67db4 100644
+--- a/test/ad.jl
++++ b/test/ad.jl
+@@ -152,10 +152,6 @@ function check_adtype(context::ADTypeCheckContext, vi::DynamicPPL.AbstractVarInf
+     end
+ end
+ 
+-# A bunch of tilde_assume/tilde_observe methods that just call the same method on the child
+-# context, and then call check_adtype on the result before returning the results from the
+-# child context.
+-
+ function DynamicPPL.tilde_assume!!(
+     context::ADTypeCheckContext,
+     right::Distribution,
+@@ -170,21 +166,6 @@ function DynamicPPL.tilde_assume!!(
+     return value, vi
+ end
+ 
+-function DynamicPPL.tilde_observe!!(
+-    context::ADTypeCheckContext,
+-    right::Distribution,
+-    left,
+-    vn::Union{VarName,Nothing},
+-    template::Any,
+-    vi::AbstractVarInfo,
+-)
+-    left, vi = DynamicPPL.tilde_observe!!(
+-        DynamicPPL.childcontext(context), right, left, vn, template, vi
+-    )
+-    check_adtype(context, vi)
+-    return left, vi
+-end
+-
+ """
+ All the ADTypes on which we want to run the tests.
+ """
+diff --git a/test/mcmc/gibbs.jl b/test/mcmc/gibbs.jl
+index cdc140662..f71cbbaf2 100644
+--- a/test/mcmc/gibbs.jl
++++ b/test/mcmc/gibbs.jl
+@@ -236,87 +236,22 @@ end
+     ) isa Any
+ end
+ 
+-@testset "latent declared as a missing model argument" begin
+-    # Gibbs conditions every non-target variable, and conditioning cannot override an argument
+-    # bound to `missing`: the `missing` reaches the likelihood. Refused with the argument named,
+-    # rather than left to throw `MethodError` from inside `loglikelihood`.
++@testset "latent model argument matches a local variable" begin
+     @model function impute(x)
+-        m ~ Normal(0, 1)
++        m ~ Normal()
+         x ~ Normal(m, 1)
+         return 2.0 ~ Normal(x, 1)
+     end
+-    @test_throws "is or holds `missing`" sample(
+-        StableRNG(468),
+-        impute(missing),
+-        Gibbs(@varname(m) => MH(), @varname(x) => MH()),
+-        10;
+-        progress=false,
+-    )
+-    # An element of an array argument goes the same way as a whole one, and a keyword argument
+-    # lands in `model.defaults` rather than `model.args`. Both reached the likelihood.
+-    @model function partly(x)
+-        mu ~ Normal()
+-        for i in eachindex(x)
+-            x[i] ~ Normal(mu, 1)
+-        end
+-    end
+-    @test_throws "is or holds `missing`" sample(
+-        StableRNG(468),
+-        partly([1.5, missing]),
+-        Gibbs(@varname(mu) => MH(), @varname(x[2]) => MH()),
+-        10;
+-        check_model=false,
+-        progress=false,
+-    )
+-    # A nested container hides a `missing` from a check that reads `eltype` alone, since the
+-    # outer element type is the inner array, never `>: Missing`.
+-    @model function nested(x)
+-        mu ~ Normal()
+-        for v in x, e in v
+-            e ~ Normal(mu, 1)
+-        end
+-    end
+-    @test_throws "is or holds `missing`" sample(
+-        StableRNG(468),
+-        nested([[1.5, missing]]),
+-        Gibbs(@varname(mu) => MH()),
+-        10;
+-        check_model=false,
+-        progress=false,
+-    )
+-    @model function bykeyword(a; b=missing)
+-        m ~ Normal()
+-        a ~ Normal(m, 1)
+-        return b ~ Normal(m, 1)
+-    end
+-    @test_throws "is or holds `missing`" sample(
+-        StableRNG(468),
+-        bykeyword(1.0),
+-        Gibbs(@varname(m) => MH(), @varname(b) => MH()),
+-        10;
+-        check_model=false,
+-        progress=false,
+-    )
+-    # Gibbs's restriction, not the model's: another sampler takes it, and so does Gibbs once
+-    # the variable is declared in the model rather than taken as an argument.
+-    @test mean(
+-        sample(StableRNG(468), impute(missing), MH(), 2000; progress=false)[@varname(m)]
+-    ) ≈ 2 / 3 atol = 0.15
+     @model function impute_inner()
+-        m ~ Normal(0, 1)
++        m ~ Normal()
+         x ~ Normal(m, 1)
+         return 2.0 ~ Normal(x, 1)
+     end
+-    chn = sample(
+-        StableRNG(468),
+-        impute_inner(),
+-        Gibbs(@varname(m) => MH(), @varname(x) => MH()),
+-        2000;
+-        progress=false,
+-    )
+-    # Conjugate posterior: E[m] = 2/3, E[x] = 4/3.
+-    @test mean(chn[@varname(m)]) ≈ 2 / 3 atol = 0.15
+-    @test mean(chn[@varname(x)]) ≈ 4 / 3 atol = 0.15
++    sampler = Gibbs(@varname(m) => MH(), @varname(x) => MH())
++    argument = sample(StableRNG(468), impute(missing), sampler, 10)
++    local_variable = sample(StableRNG(468), impute_inner(), sampler, 10)
++    @test argument[@varname(m)] == local_variable[@varname(m)]
++    @test argument[@varname(x)] == local_variable[@varname(x)]
+ end
+ 
+ @testset "Missing Gibbs samplers throw error" begin
+@@ -375,10 +310,7 @@ end
+         args...;
+         kwargs...,
+     )
+-        push!(
+-            conditioned_and_algs,
+-            (keys(DynamicPPL.conditioned(model.context)), sampler.inner),
+-        )
++        push!(conditioned_and_algs, (keys(DynamicPPL.conditioned(model)), sampler.inner))
+         return AbstractMCMC.step(rng, model, sampler.inner, args...; kwargs...)
+     end
+ 
+diff --git a/test/mcmc/gibbs_conditional.jl b/test/mcmc/gibbs_conditional.jl
+index 04715507e..f6b175221 100644
+--- a/test/mcmc/gibbs_conditional.jl
++++ b/test/mcmc/gibbs_conditional.jl
+@@ -74,23 +74,19 @@ using Turing
+     end
+ 
+     @testset "observed and latent elements of one array" begin
+-        @model function partly()
++        @model function partly(x)
+             mu ~ Normal()
+-            x = Vector{Float64}(undef, 2)
+             x[1] ~ Normal(mu, 1)
+             return x[2] ~ Normal(mu, 1)
+         end
+ 
+-        # `x[1]` is conditioned data, `x[2]` is latent and conditioned by Gibbs on the other
+-        # component's draw. The conditional has to see both: a key-level merge keeps one and
+-        # drops the other. Conditioned rather than a `missing` argument, which Gibbs refuses.
+         seen = Ref{Any}(nothing)
+         function cond_mu(vnt)
+             seen[] = vnt
+             return Normal(0, 1)
+         end
+         spl = Gibbs(@varname(mu) => GibbsConditional(cond_mu), @varname(x[2]) => MH())
+-        model = DynamicPPL.condition(partly(), Dict(@varname(x[1]) => 1.5))
++        model = DynamicPPL.condition(partly([0.0, missing]), @varname(x[1]) => 1.5)
+         sample(Xoshiro(1), model, spl, 3; check_model=false, progress=false)
+         @test DynamicPPL.getvalue(seen[], @varname(x[1])) == 1.5
+         @test DynamicPPL.hasvalue(seen[], @varname(x[2]))
+diff --git a/test/mcmc/particle_mcmc.jl b/test/mcmc/particle_mcmc.jl
+index 7eea89e1b..ee6720f29 100644
+--- a/test/mcmc/particle_mcmc.jl
++++ b/test/mcmc/particle_mcmc.jl
+@@ -679,7 +679,7 @@ end
+     end
+ 
+     @testset "submodels without kwargs" begin
+-        @model function inner(y, x)
++        @model function inner(x)
+             # Mark as noinline explicitly to make sure that behaviour is not reliant on the
+             # Julia compiler inlining it.
+             # See https://github.com/TuringLang/Turing.jl/issues/2772
+@@ -688,7 +688,7 @@ end
+         end
+         @model function nested(y)
+             x ~ Normal()
+-            return a ~ to_submodel(inner(y, x))
++            return a ~ to_submodel(condition(inner(x); y))
+         end
+         m1 = nested(1.0)
+         chn = sample(StableRNG(468), m1, PG(10), 1000)
+@@ -696,20 +696,20 @@ end
+     end
+ 
+     @testset "submodels with kwargs" begin
+-        @model function inner_kwarg(y; n=0.0)
++        @model function inner_kwarg(; n=0.0)
+             @noinline # See above
+             x ~ Normal(n)
+             return y ~ Normal(x)
+         end
+         @model function outer_kwarg1()
+-            return a ~ to_submodel(inner_kwarg(5.0))
++            return a ~ to_submodel(condition(inner_kwarg(); y=5.0))
+         end
+         m1 = outer_kwarg1()
+         chn1 = sample(StableRNG(468), m1, PG(10), 1000)
+         @test mean(chn1[Symbol("a.x")]) ≈ 2.5 atol = 0.3
+ 
+         @model function outer_kwarg2(n)
+-            return a ~ to_submodel(inner_kwarg(5.0; n=n))
++            return a ~ to_submodel(condition(inner_kwarg(; n); y=5.0))
+         end
+         m2 = outer_kwarg2(10.0)
+         chn2 = sample(StableRNG(468), m2, PG(10), 2000)
+@@ -756,7 +756,14 @@ end
+         # A particle advanced without resampling draws from its RNG continuously, so it must
+         # produce exactly the same values and log-likelihood as a plain DynamicPPL evaluation
+         # seeded identically.
+-        particle = Particle(test(), particle_rng(Xoshiro(23)))
++        @model function tracked(y)
++            x ~ Normal()
++            y ~ Normal(x, 1)
++            twice_x := 2x
++            return x
++        end
++        model = tracked(2.0)
++        particle = Particle(model, particle_rng(Xoshiro(23)))
+         run_to_end!(particle)
+ 
+         accs = DynamicPPL.VarInfo()
+@@ -764,7 +771,7 @@ end
+         accs = DynamicPPL.setacc!!(accs, DynamicPPL.RawValueAccumulator(true))
+         _, accs = DynamicPPL.init!!(
+             particle_rng(Xoshiro(23)),
+-            test(),
++            model,
+             accs,
+             DynamicPPL.InitFromPrior(),
+             DynamicPPL.UnlinkAll(),
+@@ -778,10 +785,14 @@ end
+         particle = Particle(test(), particle_rng(Xoshiro(23)))
+         advance!(particle)
+         child = fork(particle, Xoshiro(1))
+-        # Independent continuations: advancing one does not touch the other.
+         @test advance!(child) ≈ -log(2)
+-        @test particle.varinfo !== child.varinfo
+         @test advance!(particle) ≈ -log(2)
++        @test advance!(child) === nothing
++        @test advance!(particle) === nothing
++        parent_values = get_raw_values(particle.varinfo)
++        child_values = get_raw_values(child.varinfo)
++        @test parent_values[@varname(a)] == child_values[@varname(a)]
++        @test parent_values[@varname(c)] != child_values[@varname(c)]
+     end
+ 
+     @testset "both fields of a named addlogprob are weighted" begin

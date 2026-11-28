@@ -91,6 +91,21 @@ jobs:
         if: matrix.shard == 'Regressions'
         shell: bash
         run: julia --startup-file=no --depwarn=yes --project=test-env fixtures/turing-bindings/regressions.jl after 2>&1 | tee after.log
+      - name: Check the format of changed Julia files
+        if: matrix.shard == 'Regressions'
+        shell: bash
+        working-directory: target
+        run: |
+          git diff -- '*.jl' > /tmp/before-format.diff
+          git diff --name-only -z -- '*.jl' | xargs -0 julia --startup-file=no -e '
+            using Pkg
+            Pkg.activate(; temp=true)
+            Pkg.add(PackageSpec(name="JuliaFormatter", version="1"))
+            using JuliaFormatter
+            JuliaFormatter.format(ARGS)
+          ' --
+          git diff -- '*.jl' > /tmp/after-format.diff
+          diff -u /tmp/before-format.diff /tmp/after-format.diff
       - uses: actions/upload-artifact@v6
         if: ${{ !cancelled() }}
         with:

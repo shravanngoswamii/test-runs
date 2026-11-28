@@ -152,7 +152,7 @@ index 5a45a1f88..b1a0053a9 100644
  
  @inline _to_varnamedtuple(dists::NamedTuple) = DynamicPPL.VarNamedTuple(dists)
 diff --git a/src/mcmc/particle_mcmc.jl b/src/mcmc/particle_mcmc.jl
-index 871e881cd..288671026 100644
+index 871e881cd..d93272dc4 100644
 --- a/src/mcmc/particle_mcmc.jl
 +++ b/src/mcmc/particle_mcmc.jl
 @@ -33,7 +33,7 @@ particle_rng(rng::AbstractRNG) = Random123.Philox2x(UInt64, rand(rng, UInt64))
@@ -186,12 +186,14 @@ index 871e881cd..288671026 100644
      varinfo::DynamicPPL.AbstractVarInfo
      rng::RT
      # `logweight` tracks whatever `DynamicPPL.LogProbType` is, so weights follow suit if it
-@@ -110,10 +108,20 @@ function Particle(
+@@ -110,10 +108,22 @@ function Particle(
      varinfo = particle_varinfo()
      args, kwargs = DynamicPPL.make_evaluate_args_and_kwargs(model, varinfo)
      particle = Particle(varinfo, rng, reference)
 -    particle.task = Libtask.TapedTask(particle, model.f, args...; kwargs...)
-+    particle.task = Libtask.TapedTask(particle, evaluate_particle!, model.f, args...; kwargs...)
++    particle.task = Libtask.TapedTask(
++        particle, evaluate_particle!, model.f, args...; kwargs...
++    )
      return particle
  end
  
@@ -208,7 +210,7 @@ index 871e881cd..288671026 100644
  """
      reseed!(particle, rng)
  
-@@ -185,29 +193,7 @@ function DynamicPPL.tilde_assume!!(
+@@ -185,29 +195,7 @@ function DynamicPPL.tilde_assume!!(
          DynamicPPL.InitFromParams(reference, nothing)
      end
      ctx = DynamicPPL.InitContext(particle.rng, strategy, DynamicPPL.UnlinkAll())
@@ -239,7 +241,7 @@ index 871e881cd..288671026 100644
  end
  
  """
-@@ -248,68 +234,25 @@ function DynamicPPL.accumulate_observe!!(
+@@ -248,68 +236,25 @@ function DynamicPPL.accumulate_observe!!(
      return DynamicPPL.acclogp(acc, Distributions.loglikelihood(dist, left))
  end
  
@@ -321,7 +323,7 @@ index 871e881cd..288671026 100644
  end
  
  # Tell Libtask which calls may contain a `produce`, so it instruments them. The produce itself is in
-@@ -317,7 +260,7 @@ end
+@@ -317,7 +262,7 @@ end
  # approximating is safe (a wrongly-marked call is merely instrumented); missing a real one is not.
  #
  #   observe:      tilde_observe!! -> accumulate_observe!! -> acclogp
@@ -330,7 +332,7 @@ index 871e881cd..288671026 100644
  #                 (the `@addlogprob! (; ...)` NamedTuple form arrives via acclogp!!, and its
  #                 `logprior` field produces in acclogprior!! itself)
  #   Gibbs:        a conditioned variable is an observation, so it hits tilde_observe!!
-@@ -327,7 +270,6 @@ Libtask.@might_produce(DynamicPPL.acclogp)
+@@ -327,7 +272,6 @@ Libtask.@might_produce(DynamicPPL.acclogp)
  Libtask.@might_produce(DynamicPPL.tilde_assume!!)
  Libtask.@might_produce(DynamicPPL.accloglikelihood!!)
  Libtask.@might_produce(DynamicPPL.acclogprior!!)
@@ -338,7 +340,7 @@ index 871e881cd..288671026 100644
  Libtask.@might_produce(DynamicPPL.map_accumulator!!)
  Libtask.@might_produce(DynamicPPL.acclogp!!)
  # Every model / submodel evaluator takes a `DynamicPPL.Model`, so this covers them all.
-@@ -342,9 +284,7 @@ function trajectory_varinfo()
+@@ -342,9 +286,7 @@ function trajectory_varinfo()
      return DynamicPPL.setacc!!(DynamicPPL.VarInfo(), DynamicPPL.RawValueAccumulator(true))
  end
  

@@ -1,8 +1,8 @@
-name: Turing binding migration
+name: Format the Turing binding migration
 
 on:
   push:
-    branches: [sg/turing-bindings-suite]
+    branches: [sg/turing-bindings-format]
   workflow_dispatch:
 
 permissions:
@@ -17,16 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: Gibbs
-            args: mcmc/gibbs.jl mcmc/gibbs_conditional.jl
-          - shard: Particles
-            args: mcmc/particle_mcmc.jl
-          - shard: AD
-            args: ad.jl
-          - shard: Inference
-            args: mcmc/Inference.jl
-          - shard: Remaining
-            args: --skip mcmc/gibbs.jl mcmc/gibbs_conditional.jl mcmc/particle_mcmc.jl ad.jl mcmc/Inference.jl
           - shard: Regressions
             args: ''
     env:

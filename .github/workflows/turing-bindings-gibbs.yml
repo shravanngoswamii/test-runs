@@ -16,13 +16,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - case: base-base
-            dynamicppl: e0c62ec0b22cc844e4ca605eda08321b606eb892
           - case: base-head
             dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
-          - case: migrated
+          - case: mark-tuple-map
             dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
-          - case: mark-map
+          - case: keep-evaluator-call
             dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
     env:
       JULIA_NUM_THREADS: '2'
@@ -68,7 +66,7 @@ jobs:
           cp fixtures/turing-bindings/{Project,Manifest}.toml test-env/
           julia --startup-file=no --project=test-env -e 'using Pkg; Pkg.instantiate(; allow_autoprecomp=false); Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)' | tee setup.log
       - name: Apply the Turing migration
-        if: matrix.case == 'migrated' || matrix.case == 'mark-map'
+        if: matrix.case != 'base-head'
         shell: bash
         run: git -C target apply "$PWD/fixtures/turing-bindings/turing.patch"
       - name: Capture weights and seeded draws

@@ -3,8 +3,20 @@ using DynamicPPL, Random, StableRNGs, Turing
 using Turing.Inference: Particle, advance!, particle_rng
 using Test: @testset
 
-if only(ARGS) == "mark-map"
-    @eval Turing.Inference Libtask.@might_produce(DynamicPPL.map_accumulators!!)
+if only(ARGS) == "mark-tuple-map"
+    @eval Turing.Inference begin
+        Libtask.@might_produce(DynamicPPL.map_accumulators!!)
+        Libtask.might_produce(::Type{<:Tuple{typeof(map),Function,DynamicPPL.AccumulatorTuple}}) = true
+    end
+elseif only(ARGS) == "keep-evaluator-call"
+    @eval Turing.Inference begin
+        @noinline run_particle_model(model, args...; kwargs...) = model.f(model, args...; kwargs...)
+        function evaluate_particle!(model::DynamicPPL.Model, args...; kwargs...)
+            _, vi = run_particle_model(model, args...; kwargs...)
+            Libtask.get_taped_globals(Particle).varinfo = vi
+            return nothing
+        end
+    end
 end
 
 @model function dynamic_bernoulli_normal(y_obs=2.0)

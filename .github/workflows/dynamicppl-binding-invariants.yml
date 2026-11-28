@@ -1,0 +1,64 @@
+name: Check DynamicPPL binding invariants
+
+on:
+  push:
+    branches: [sg/dynamicppl-binding-invariants]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        julia: ['1.10.8', '1.13.4']
+    env:
+      JULIA_PKG_PRECOMPILE_AUTO: '0'
+      JULIA_NUM_PRECOMPILE_TASKS: '2'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/DynamicPPL.jl
+          ref: e0c62ec0b22cc844e4ca605eda08321b606eb892
+          path: base
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/DynamicPPL.jl
+          ref: e924cf288a1482fd994477ed1ea2cded8c129ae0
+          path: head
+          persist-credentials: false
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.julia }}
+      - uses: julia-actions/cache@v3
+      - name: Probe base and head with the same dependencies
+        shell: bash
+        run: |
+          mkdir review-env
+          for revision in base head; do
+            julia --startup-file=no --project=review-env -e '
+              using Pkg
+              revision = only(ARGS)
+              Pkg.develop(PackageSpec(path=abspath(revision)); preserve=Pkg.PRESERVE_ALL)
+              if revision == "base"
+                  Pkg.add("Distributions"; preserve=Pkg.PRESERVE_ALL)
+              end
+              Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)
+            ' -- "$revision"
+            cp review-env/Manifest.toml "$revision-manifest.toml"
+            julia --startup-file=no --depwarn=yes --project=review-env fixtures/dynamicppl-binding-invariants.jl "$revision" | tee "$revision.log"
+          done
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: binding-invariants-${{ matrix.julia }}
+          path: |
+            *-manifest.toml
+            *.log

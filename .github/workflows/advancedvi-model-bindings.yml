@@ -1,0 +1,58 @@
+name: Check AdvancedVI minibatching with model bindings
+
+on:
+  push:
+    branches: [sg/advancedvi-model-bindings]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: AdvancedVI / ${{ matrix.revision }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - revision: base
+            dynamicppl: e0c62ec0b22cc844e4ca605eda08321b606eb892
+          - revision: bindings
+            dynamicppl: e924cf288a1482fd994477ed1ea2cded8c129ae0
+    env:
+      JULIA_NUM_PRECOMPILE_TASKS: '1'
+      OPENBLAS_NUM_THREADS: '1'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: TuringLang/DynamicPPL.jl
+          ref: ${{ matrix.dynamicppl }}
+          path: dynamicppl
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: shravanngoswamii/AdvancedVI.jl
+          ref: 8f7d5c0763afe805b7105d61e98f9e47942a02b7
+          path: advancedvi
+          persist-credentials: false
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1.13.4'
+      - uses: julia-actions/cache@v3
+      - name: Run the minibatch comparison
+        shell: bash
+        run: |
+          mkdir test-env
+          julia --startup-file=no --project=test-env -e '
+            using Pkg
+            Pkg.develop([PackageSpec(; path=abspath(path)) for path in ("dynamicppl", "advancedvi")])
+            Pkg.add(["Distributions", "LogDensityProblems"])
+            Pkg.status(; mode=Pkg.PKGMODE_MANIFEST)
+          '
+          julia --startup-file=no --depwarn=yes --project=test-env fixtures/turing-bindings/minibatch.jl '${{ matrix.revision }}'
+        env:
+          JULIA_PKG_PRECOMPILE_AUTO: '0'

@@ -3,17 +3,24 @@ using DynamicPPL, Random, StableRNGs, Turing
 using Turing.Inference: Particle, advance!, particle_rng
 using Test: @testset
 
-if only(ARGS) == "mark-tuple-map"
-    @eval Turing.Inference begin
-        Libtask.@might_produce(DynamicPPL.map_accumulators!!)
-        Libtask.might_produce(::Type{<:Tuple{typeof(map),Function,DynamicPPL.AccumulatorTuple}}) = true
-    end
-elseif only(ARGS) == "keep-model-call"
-    @eval Turing.Inference begin
-        function evaluate_particle!(model::DynamicPPL.Model, args...; kwargs...)
-            _, vi = @noinline model.f(model, args...; kwargs...)
-            Libtask.get_taped_globals(Particle).varinfo = vi
-            return nothing
+function trace_invokes(model)
+    inf = Turing.Inference
+    lt = inf.Libtask
+    model = DynamicPPL.setleafcontext(model, inf.SMCContext())
+    args, kwargs = DynamicPPL.make_evaluate_args_and_kwargs(model, inf.particle_varinfo())
+    for f in (inf.evaluate_particle!, model.f)
+        println("Input IR for ", typeof(f))
+        bb = lt.generate_ir(:input_bb, f, args...; kwargs...)
+        for block in bb.blocks, inst in block.insts
+            stmt = inst.stmt
+            if Meta.isexpr(stmt, :invoke)
+                mi = lt.get_mi(stmt.args[1])
+                name = mi.def isa Method ? mi.def.name : Symbol("unknown")
+                mod = mi.def isa Method ? mi.def.module : :unknown
+                println("  invoke ", mod, ".", name, " tape=", lt.stmt_might_produce(stmt, lt.CC.widenconst(inst.type)))
+            elseif Meta.isexpr(stmt, :call)
+                println("  call ", stmt.args[1], " tape=", lt.stmt_might_produce(stmt, lt.CC.widenconst(inst.type)))
+            end
         end
     end
 end
@@ -44,6 +51,7 @@ end
 
 model = dynamic_bernoulli_normal(2.0)
 @show VERSION pathof(DynamicPPL) pathof(Turing) isdefined(DynamicPPL, :BindingTable)
+only(ARGS) == "trace-invokes" && trace_invokes(model)
 for seed in 1:5
     diagnose(model, seed)
 end
@@ -78,6 +86,7 @@ end
         end
     end
     model = dynamic_bernoulli_normal_local(2.0)
+    only(ARGS) == "trace-invokes" && trace_invokes(model)
     for seed in 1:5
         diagnose(model, seed)
     end
